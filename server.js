@@ -441,7 +441,7 @@ async function serveMedia(req, res, token, filename) {
       return text(res, 404, 'Not found');
     }
     if (error?.$metadata?.httpStatusCode === 416) {
-      res.writeHead(416, total ? { 'Content-Range': `bytes */${total}` } : {});
+      res.writeHead(416);
       return res.end();
     }
     throw error;
