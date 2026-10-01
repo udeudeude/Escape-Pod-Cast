@@ -2,74 +2,57 @@
 
 **Drop an audio file in a web page. It appears as a new episode in your own personal podcast.**
 
-Escape Pod Cast is a small open-source machine for turning arbitrary audio into a private-by-secret-link podcast feed. You run your own copy, connect your own Cloudflare R2 bucket, and get your own feed.
+Escape Pod Cast is an open-source machine for turning arbitrary audio into a private-by-secret-link podcast feed. Each person deploys their own copy, connects their own object-storage bucket, and gets their own feed.
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/udeudeude/Escape-Pod-Cast)
+
+## The $0 default
+
+The guided setup uses:
+
+- **Render free web service** for the small application server.
+- **Backblaze B2** for a private audio library. Backblaze currently offers the first 10 GB free and says no credit card is required to start.
+- No Render disk and no public storage bucket.
+
+See **[SETUP.md](SETUP.md)** for the click-by-click setup.
 
 ## What it does
 
 1. Sign into your password-protected uploader.
 2. Drop one or several audio files.
-3. Optionally edit the episode titles and notes.
+3. Optionally edit titles and notes.
 4. Tap **Publish**.
-5. The audio streams directly into your own R2 bucket.
-6. The episode metadata is saved in that same bucket.
+5. Audio streams directly into your private S3-compatible bucket.
+6. Episode metadata is stored in that same bucket.
 7. Your RSS feed immediately includes the new episode.
-8. Subscribe to the feed once in Apple Podcasts, Overcast, Pocket Casts, or another podcast app.
+8. Podcast clients retrieve audio through Escape Pod Cast, which supports byte-range requests for seeking and downloads.
 
-The Render service itself stores nothing important. It can restart or redeploy without losing your library.
+The Render service stores nothing important locally, so it can restart or redeploy without losing your library.
 
-## Why bring your own R2?
+## Bring your own storage
 
-Cloudflare R2's Standard tier currently includes a monthly free allowance of storage and requests and does not charge egress bandwidth. Each Escape Pod Cast owner supplies their own R2 account, so there is no shared central audio store and no Escape Pod Cast account system.
+The application is provider-neutral. It accepts:
 
-Your R2 credentials stay in your own hosting environment. They are never committed to this repository.
+- `STORAGE_ENDPOINT`
+- `STORAGE_REGION`
+- `STORAGE_ACCESS_KEY_ID`
+- `STORAGE_SECRET_ACCESS_KEY`
+- `STORAGE_BUCKET`
 
-## Setup
+Backblaze B2 is the default because it supports the S3-compatible API and can be started without a payment method. Cloudflare R2 and other S3-compatible services can be substituted.
 
-See **[SETUP.md](SETUP.md)**. It walks through:
+## Privacy
 
-- creating an R2 bucket,
-- making a public media URL,
-- creating a bucket-scoped read/write API token,
-- deploying this repository on Render's free web-service plan,
-- pasting the five R2 values and choosing an uploader password,
-- subscribing to your newly generated feed.
-
-## Privacy model
-
-- The uploader is protected with a password.
+- The uploader is password-protected.
 - Each installation gets a long random `FEED_TOKEN`.
-- Episode object paths contain that token plus random identifiers.
-- The feed URL should be treated as a password: anyone who possesses it can learn the episode URLs.
-- R2's public `r2.dev` URL is the easiest no-domain setup, but Cloudflare describes it as a development URL and rate-limits it. A custom R2 domain can replace it later without changing how the app works.
-
-## Storage model
-
-R2 contains:
-
-```
-media/<feed-token>/<random-id>.mp3
-private/<feed-token>/episodes.json
-```
-
-The metadata object is also behind an unguessable token path. The application accesses it through authenticated R2 API calls.
+- The storage bucket can remain private.
+- Podcast enclosure URLs contain the feed token and random media identifiers.
+- Treat the feed URL as a password.
 
 ## Supported audio
 
 MP3, M4A/audio MP4, AAC, WAV, FLAC, OGG, and OPUS.
 
-## Local development
-
-```sh
-cp .env.example .env
-# export the variables in .env
-npm install
-npm start
-```
-
-Node 20 or newer is required.
-
 ## License
 
-MIT. Fork it, alter it, host it yourself, and make your own version.
+MIT. Fork it, modify it, deploy your own copy, or build another interface around it.
