@@ -13,15 +13,15 @@ services:
         sync: false
       - key: FEED_TOKEN
         generateValue: true
-      - key: R2_ACCOUNT_ID
+      - key: STORAGE_ENDPOINT
         sync: false
-      - key: R2_ACCESS_KEY_ID
+      - key: STORAGE_REGION
         sync: false
-      - key: R2_SECRET_ACCESS_KEY
+      - key: STORAGE_ACCESS_KEY_ID
         sync: false
-      - key: R2_BUCKET
+      - key: STORAGE_SECRET_ACCESS_KEY
         sync: false
-      - key: R2_PUBLIC_BASE_URL
+      - key: STORAGE_BUCKET
         sync: false
       - key: SHOW_TITLE
         value: Escape Pod Cast
