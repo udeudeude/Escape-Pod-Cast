@@ -1,113 +1,114 @@
-# Setup Escape Pod Cast
+# Set up Escape Pod Cast for $0
 
-This setup gives you your own uploader, your own Cloudflare R2 storage, and your own secret podcast feed.
+The default setup uses a **private Backblaze B2 bucket + a free Render web service**. Backblaze currently says no credit card is required to start B2, and the first 10 GB of storage is free.
 
-## 1. Make the R2 bucket
+The bucket stays private. Escape Pod Cast relays authenticated audio from B2 to your podcast application, so you do **not** need to pay to enable a public bucket.
 
-1. Sign in to Cloudflare.
-2. Open **Storage & databases → R2 → Overview**.
-3. Choose **Create bucket**.
-4. Name it something like `escape-pod-cast`.
-5. Use the **Standard** storage class.
+## 1. Create a free Backblaze account
 
-Keep this tab open.
+Go to:
 
-## 2. Give the bucket a public media address
+**https://www.backblaze.com/sign-up/cloud-storage**
 
-The easiest personal setup does not require buying a domain:
+Create the account and verify your email address. No credit card is required to start.
 
-1. Open your new bucket.
-2. Open **Settings**.
-3. Under **Public Development URL**, choose **Enable**.
-4. Cloudflare asks you to type `allow`.
-5. Copy the resulting URL. It looks approximately like:
+If B2 Cloud Storage is not already enabled, open **My Settings → Enabled Products** and enable **B2 Cloud Storage**.
 
-```
-https://pub-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.r2.dev
-```
+## 2. Create a private bucket
 
-This becomes **R2_PUBLIC_BASE_URL**.
-
-Cloudflare calls `r2.dev` a development endpoint and rate-limits it. It is convenient for a personal/light-use installation. If you later want a more production-oriented setup, connect a custom domain to the bucket and replace only `R2_PUBLIC_BASE_URL`.
-
-## 3. Create credentials for only this bucket
-
-From **R2 → Overview**:
-
-1. Open **Manage API Tokens**.
-2. Choose **Create Account API token** or **Create User API token**.
-3. Grant **Object Read & Write** permission.
-4. Restrict the token to **this bucket only**.
-5. Create the token.
-6. Copy:
-   - **Access Key ID**
-   - **Secret Access Key**
-   - your R2 **S3 endpoint**, which contains your Cloudflare Account ID.
-
-The endpoint looks like:
+1. Open **B2 Cloud Storage → Buckets**.
+2. Choose **Create a Bucket**.
+3. Give it a globally unique name, for example `escape-pod-cast-yourname`.
+4. Leave **Files in Bucket: Private**.
+5. You do not need Object Lock.
+6. Create the bucket.
+7. Copy its **Endpoint**. It looks like:
 
 ```
-https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+s3.us-west-004.backblazeb2.com
 ```
 
-The part before `.r2.cloudflarestorage.com` is **R2_ACCOUNT_ID**.
+For Escape Pod Cast:
 
-Cloudflare only shows the secret access key when the token is created. Store it somewhere safe until the Render setup is complete.
+- **STORAGE_ENDPOINT** = `https://` plus that endpoint
+- **STORAGE_REGION** = the region embedded in it, e.g. `us-west-004`
+- **STORAGE_BUCKET** = your bucket name
 
-## 4. Deploy your copy on Render
+## 3. Create a bucket-specific application key
+
+1. Open **B2 Cloud Storage → Application Keys**.
+2. Choose **Add a New Application Key**.
+3. Name it `escape-pod-cast`.
+4. Restrict it to the bucket you just created.
+5. Give it **Read and Write** access.
+6. Enable **Allow List All Bucket Names** if Backblaze presents that option. Backblaze recommends this for S3-compatible bucket-restricted keys.
+7. Create the key.
+8. Copy both values immediately:
+   - **keyID** → **STORAGE_ACCESS_KEY_ID**
+   - **applicationKey** → **STORAGE_SECRET_ACCESS_KEY**
+
+Backblaze displays the applicationKey only once.
+
+## 4. Deploy the machine on Render
 
 Use:
 
 **https://render.com/deploy?repo=https://github.com/udeudeude/Escape-Pod-Cast**
 
-The repository's `render.yaml` requests a **free** web service and no Render disk.
+The repository requests a **free** Render web service and **no persistent disk**.
 
-When Render asks for environment variables, enter:
+When Render asks for variables, enter:
 
-| Variable | What to enter |
+| Variable | Value |
 | --- | --- |
-| `ADMIN_PASSWORD` | A password you choose for the uploader |
-| `R2_ACCOUNT_ID` | Cloudflare Account ID from the R2 S3 endpoint |
-| `R2_ACCESS_KEY_ID` | R2 token's Access Key ID |
-| `R2_SECRET_ACCESS_KEY` | R2 token's Secret Access Key |
-| `R2_BUCKET` | Your bucket name, for example `escape-pod-cast` |
-| `R2_PUBLIC_BASE_URL` | Your `https://pub-….r2.dev` URL or custom R2 domain |
+| `ADMIN_PASSWORD` | A password you choose for your uploader |
+| `STORAGE_ENDPOINT` | e.g. `https://s3.us-west-004.backblazeb2.com` |
+| `STORAGE_REGION` | e.g. `us-west-004` |
+| `STORAGE_ACCESS_KEY_ID` | Backblaze `keyID` |
+| `STORAGE_SECRET_ACCESS_KEY` | Backblaze `applicationKey` |
+| `STORAGE_BUCKET` | Your bucket name |
 
-Render generates **FEED_TOKEN** automatically. Do not replace it unless you deliberately want to invalidate your old feed URL.
+Render generates **FEED_TOKEN** automatically. Do not change it later unless you deliberately want a new feed URL.
 
-You can also edit **SHOW_TITLE**, **SHOW_DESCRIPTION**, and **AUTHOR**.
+You may also customize **SHOW_TITLE**, **SHOW_DESCRIPTION**, and **AUTHOR**.
 
-## 5. Open the uploader
+## 5. Subscribe
 
-After the deploy finishes, open the Render URL.
+Open your deployed Render URL.
 
-Your browser will ask for a username and password. The username does not matter; enter anything. The password is the **ADMIN_PASSWORD** you chose.
+Your browser will ask for a username and password. The username can be anything; the password is your **ADMIN_PASSWORD**.
 
-The page will show **Subscribe once** and your unique feed address.
+The page shows your secret podcast feed URL. Add it to your podcast application using **Follow a Show by URL**, **Add Podcast by URL**, or equivalent.
 
-Copy that feed address into your podcast application using **Follow a Show by URL**, **Add Podcast by URL**, or the equivalent option.
+## 6. Publish
 
-## 6. Publish something
+Drop an audio file into Escape Pod Cast, edit its title or notes if desired, and tap **Publish**.
 
-Drop an audio file onto the uploader.
+The file streams into your private B2 bucket. Escape Pod Cast updates the metadata object in the same bucket. Your podcast feed immediately contains the episode.
 
-You can edit its title or add notes, then choose **Publish**. Escape Pod Cast streams the file into your R2 bucket and updates the metadata stored there. The next refresh of your podcast application should see it as a new episode.
-
-## What is stored where?
-
-Render stores no podcast library on disk.
-
-Your bucket contains objects like:
+## Architecture
 
 ```
-media/<long-random-feed-token>/<random-id>.mp3
-private/<long-random-feed-token>/episodes.json
+phone / Mac
+    |
+    | upload
+    v
+Escape Pod Cast on free Render
+    |
+    | authenticated S3-compatible API
+    v
+private Backblaze B2 bucket
+    ^
+    |
+Escape Pod Cast relays audio with HTTP byte-range support
+    |
+podcast app
 ```
 
-The feed itself is generated on demand from `episodes.json`.
+Render's filesystem is disposable. Your library survives because the audio and episode metadata live in B2.
 
-## Moving away from Render
+## Other object-storage providers
 
-Render is not fundamental to Escape Pod Cast. It is only the small web server running the machine. Because the library lives in your R2 bucket, you can move the server to another Node-compatible host later and reconnect the same environment variables.
+Escape Pod Cast is intentionally provider-neutral. It uses the S3-compatible API. If you prefer Cloudflare R2 or another compatible provider, use its endpoint, region, access key, secret, and bucket in the same five `STORAGE_*` variables.
 
-Keep the same **FEED_TOKEN** and public hostname if you need the exact existing feed URL to remain unchanged.
+Cloudflare R2 works, but Cloudflare currently requires a billing method to activate R2 even when usage remains inside its free allowance. That is why Backblaze B2 is the default setup.
