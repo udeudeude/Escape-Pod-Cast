@@ -17,23 +17,23 @@ const AUTHOR = process.env.AUTHOR || 'Personal';
 const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB || 300);
 const PUBLIC_URL = (process.env.PUBLIC_URL || '').replace(/\/$/, '');
 
-const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID || '';
-const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID || '';
-const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY || '';
-const R2_BUCKET = process.env.R2_BUCKET || '';
-const R2_PUBLIC_BASE_URL = (process.env.R2_PUBLIC_BASE_URL || '').replace(/\/$/, '');
+const STORAGE_ENDPOINT = (process.env.STORAGE_ENDPOINT || '').replace(/\/$/, '');
+const STORAGE_REGION = process.env.STORAGE_REGION || 'auto';
+const STORAGE_ACCESS_KEY_ID = process.env.STORAGE_ACCESS_KEY_ID || '';
+const STORAGE_SECRET_ACCESS_KEY = process.env.STORAGE_SECRET_ACCESS_KEY || '';
+const STORAGE_BUCKET = process.env.STORAGE_BUCKET || '';
 
-const r2Ready = Boolean(
-  R2_ACCOUNT_ID && R2_ACCESS_KEY_ID && R2_SECRET_ACCESS_KEY &&
-  R2_BUCKET && R2_PUBLIC_BASE_URL && FEED_TOKEN
+const storageReady = Boolean(
+  STORAGE_ENDPOINT && STORAGE_ACCESS_KEY_ID && STORAGE_SECRET_ACCESS_KEY &&
+  STORAGE_BUCKET && FEED_TOKEN
 );
 
-const s3 = r2Ready ? new S3Client({
-  region: 'auto',
-  endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+const s3 = storageReady ? new S3Client({
+  region: STORAGE_REGION,
+  endpoint: STORAGE_ENDPOINT,
   credentials: {
-    accessKeyId: R2_ACCESS_KEY_ID,
-    secretAccessKey: R2_SECRET_ACCESS_KEY
+    accessKeyId: STORAGE_ACCESS_KEY_ID,
+    secretAccessKey: STORAGE_SECRET_ACCESS_KEY
   }
 }) : null;
 
@@ -45,7 +45,7 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const p = url.pathname;
 
-    if (req.method === 'GET' && p === '/health') return json(res, 200, { ok: true, storage: r2Ready });
+    if (req.method === 'GET' && p === '/health') return json(res, 200, { ok: true, storage: storageReady });
     if (req.method === 'GET' && p.startsWith('/assets/')) return serveAsset(p.slice('/assets/'.length), req, res);
 
     if (req.method === 'GET' && p === '/') {
@@ -54,19 +54,24 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && p === '/upload') {
       if (!authorized(req)) return challenge(res);
-      if (!r2Ready) return text(res, 503, 'R2 is not configured yet.');
+      if (!storageReady) return text(res, 503, 'Storage is not configured yet.');
       return upload(req, res);
     }
     const del = p.match(/^\/episodes\/([0-9a-f-]{36})\/delete$/i);
     if (req.method === 'POST' && del) {
       if (!authorized(req)) return challenge(res);
-      if (!r2Ready) return text(res, 503, 'R2 is not configured yet.');
+      if (!storageReady) return text(res, 503, 'Storage is not configured yet.');
       return deleteEpisode(del[1], res);
     }
     const feed = p.match(/^\/feed\/([^/]+)\.xml$/);
     if (req.method === 'GET' && feed) {
-      if (!r2Ready) return text(res, 503, 'R2 is not configured yet.');
+      if (!storageReady) return text(res, 503, 'Storage is not configured yet.');
       return podcastFeed(req, res, decodeURIComponent(feed[1]));
+    }
+    const media = p.match(/^\/media\/([^/]+)\/([0-9a-f-]{36}\.[a-z0-9]{2,5})$/i);
+    if ((req.method === 'GET' || req.method === 'HEAD') && media) {
+      if (!storageReady) return text(res, 503, 'Storage is not configured yet.');
+      return serveMedia(req, res, decodeURIComponent(media[1]), media[2]);
     }
 
     text(res, 404, 'Not found');
@@ -107,14 +112,11 @@ function feedUrl(req) {
   return `${origin(req)}/feed/${encodeURIComponent(FEED_TOKEN)}.xml`;
 }
 
-function objectUrl(key) {
-  return `${R2_PUBLIC_BASE_URL}/${key.split('/').map(encodeURIComponent).join('/')}`;
-}
 
 async function loadEpisodes() {
-  if (!r2Ready) return [];
+  if (!storageReady) return [];
   try {
-    const response = await s3.send(new GetObjectCommand({ Bucket: R2_BUCKET, Key: META_KEY }));
+    const response = await s3.send(new GetObjectCommand({ Bucket: STORAGE_BUCKET, Key: META_KEY }));
     const textBody = await response.Body.transformToString();
     const parsed = JSON.parse(textBody);
     return Array.isArray(parsed) ? parsed : [];
@@ -126,7 +128,7 @@ async function loadEpisodes() {
 
 async function saveEpisodes(episodes) {
   await s3.send(new PutObjectCommand({
-    Bucket: R2_BUCKET,
+    Bucket: STORAGE_BUCKET,
     Key: META_KEY,
     Body: JSON.stringify(episodes, null, 2),
     ContentType: 'application/json',
@@ -162,7 +164,7 @@ function mimeFor(filename) {
 }
 
 async function home(req, res) {
-  const episodes = r2Ready
+  const episodes = storageReady
     ? (await loadEpisodes()).sort((a,b) => new Date(b.publishedAt) - new Date(a.publishedAt))
     : [];
 
@@ -172,17 +174,17 @@ async function home(req, res) {
         <strong>${html(e.title)}</strong>
         <div class="meta">${html(new Date(e.publishedAt).toLocaleString())} · ${e.duration ? html(formatDuration(e.duration))+' · ' : ''}${html(formatBytes(e.size))}</div>
       </div>
-      <audio controls preload="none" src="${html(objectUrl(e.key))}"></audio>
+      <audio controls preload="none" src="/media/${encodeURIComponent(FEED_TOKEN)}/${encodeURIComponent(path.basename(e.key))}"></audio>
       <form method="post" action="/episodes/${e.id}/delete" onsubmit="return confirm('Delete this episode and its audio file?')">
         <button class="danger" type="submit">Delete</button>
       </form>
     </article>`).join('');
 
-  const setup = !r2Ready ? `
+  const setup = !storageReady ? `
     <section class="card">
       <h2>Setup required</h2>
       <p>This instance is running, but it still needs your Cloudflare R2 bucket credentials.</p>
-      <p class="meta">Set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET, R2_PUBLIC_BASE_URL, FEED_TOKEN, and ADMIN_PASSWORD in the host environment.</p>
+      <p class="meta">Set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, STORAGE_BUCKET, R2_PUBLIC_BASE_URL, FEED_TOKEN, and ADMIN_PASSWORD in the host environment.</p>
       <p><a href="https://github.com/udeudeude/Escape-Pod-Cast/blob/main/SETUP.md">Open the setup guide</a></p>
     </section>` : '';
 
@@ -197,7 +199,7 @@ async function home(req, res) {
       <h2>Drop audio here</h2>
       <form id="uploadForm" action="/upload" method="post" enctype="multipart/form-data">
         <label id="dropzone" class="dropzone">
-          <input id="files" type="file" name="audio" accept="audio/*,.m4a,.mp3,.wav,.flac,.ogg,.opus,.aac,.mp4" multiple required ${r2Ready ? '' : 'disabled'}>
+          <input id="files" type="file" name="audio" accept="audio/*,.m4a,.mp3,.wav,.flac,.ogg,.opus,.aac,.mp4" multiple required ${storageReady ? '' : 'disabled'}>
           <span><b>Choose files</b> or drop them here</span>
           <small>MP3, M4A, AAC, WAV, FLAC, OGG, OPUS · up to ${MAX_UPLOAD_MB} MB each</small>
         </label>
@@ -206,7 +208,7 @@ async function home(req, res) {
         <p id="status" class="meta"></p>
       </form>
     </section>
-    ${r2Ready ? `
+    ${storageReady ? `
     <section class="card">
       <h2>Subscribe once</h2>
       <p>Add this address in your podcast app using “Follow a Show by URL” or “Add podcast by URL.”</p>
@@ -277,7 +279,7 @@ async function upload(req, res) {
     const task = new Upload({
       client: s3,
       params: {
-        Bucket: R2_BUCKET,
+        Bucket: STORAGE_BUCKET,
         Key: key,
         Body: stream,
         ContentType: mime,
@@ -337,7 +339,7 @@ async function upload(req, res) {
     redirect(res, '/');
   } catch (error) {
     await Promise.allSettled(uploadedKeys.map(key =>
-      s3.send(new DeleteObjectCommand({ Bucket: R2_BUCKET, Key: key }))
+      s3.send(new DeleteObjectCommand({ Bucket: STORAGE_BUCKET, Key: key }))
     ));
     text(res, 400, error?.message || 'Upload failed');
   }
@@ -348,7 +350,7 @@ async function deleteEpisode(id, res) {
   const target = episodes.find(e => e.id === id);
   if (!target) return text(res, 404, 'Episode not found');
 
-  await s3.send(new DeleteObjectCommand({ Bucket: R2_BUCKET, Key: target.key }));
+  await s3.send(new DeleteObjectCommand({ Bucket: STORAGE_BUCKET, Key: target.key }));
   await saveEpisodes(episodes.filter(e => e.id !== id));
   redirect(res, '/');
 }
@@ -365,7 +367,7 @@ async function podcastFeed(req, res, token) {
       <guid isPermaLink="false">${xml(e.id)}</guid>
       <pubDate>${new Date(e.publishedAt).toUTCString()}</pubDate>
       <description>${xml(e.description || e.originalName || e.title)}</description>
-      <enclosure url="${xml(objectUrl(e.key))}" length="${Number(e.size)||0}" type="${xml(e.mime || mimeFor(e.key))}"/>
+      <enclosure url="${xml(`${base}/media/${encodeURIComponent(FEED_TOKEN)}/${encodeURIComponent(path.basename(e.key))}`)}" length="${Number(e.size)||0}" type="${xml(e.mime || mimeFor(e.key))}"/>
       ${e.duration ? `<itunes:duration>${Math.round(e.duration)}</itunes:duration>` : ''}
     </item>`).join('\n');
 
@@ -392,6 +394,58 @@ ${items}
     'Cache-Control':'no-store'
   });
   res.end(body);
+}
+
+async function serveMedia(req, res, token, filename) {
+  if (token !== FEED_TOKEN) return text(res, 404, 'Not found');
+  const key = `${MEDIA_PREFIX}${filename}`;
+  const range = req.headers.range;
+
+  try {
+    const response = await s3.send(new GetObjectCommand({
+      Bucket: STORAGE_BUCKET,
+      Key: key,
+      ...(range ? { Range: range } : {})
+    }));
+
+    const size = Number(response.ContentLength || 0);
+    const total = response.ContentRange
+      ? Number(String(response.ContentRange).split('/').pop())
+      : size;
+
+    const headers = {
+      'Content-Type': response.ContentType || mimeFor(filename),
+      'Accept-Ranges': 'bytes',
+      'Cache-Control': 'private, max-age=3600'
+    };
+
+    if (response.ContentRange) {
+      headers['Content-Range'] = response.ContentRange;
+      headers['Content-Length'] = String(size);
+      res.writeHead(206, headers);
+    } else {
+      headers['Content-Length'] = String(size);
+      res.writeHead(200, headers);
+    }
+
+    if (req.method === 'HEAD') {
+      if (response.Body?.destroy) response.Body.destroy();
+      return res.end();
+    }
+
+    if (!response.Body) return res.end();
+    response.Body.on('error', error => res.destroy(error));
+    response.Body.pipe(res);
+  } catch (error) {
+    if (error?.name === 'NoSuchKey' || error?.$metadata?.httpStatusCode === 404) {
+      return text(res, 404, 'Not found');
+    }
+    if (error?.$metadata?.httpStatusCode === 416) {
+      res.writeHead(416, total ? { 'Content-Range': `bytes */${total}` } : {});
+      return res.end();
+    }
+    throw error;
+  }
 }
 
 async function serveAsset(name, req, res) {
