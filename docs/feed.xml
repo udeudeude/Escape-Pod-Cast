@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+  <channel>
+    <title>Escape Pod Cast</title>
+    <link>https://github.com/udeudeude/Escape-Pod-Cast</link>
+    <description>Audio dropped from my Mac for personal listening. Remote audio expires after 14 days.</description>
+    <language>en-us</language>
+    <itunes:author>Escape Pod Cast</itunes:author>
+    <itunes:explicit>false</itunes:explicit>
+    <itunes:block>Yes</itunes:block>
+    <itunes:type>episodic</itunes:type>
+  </channel>
+</rss>

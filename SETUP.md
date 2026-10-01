@@ -1,114 +1,87 @@
-# Set up Escape Pod Cast for $0
+# Install Escape Pod Cast on your Mac
 
-The default setup uses a **private Backblaze B2 bucket + a free Render web service**. Backblaze currently says no credit card is required to start B2, and the first 10 GB of storage is free.
+This setup uses your existing GitHub account. It costs nothing and asks for no payment method. You do not need Render, Backblaze, Apple Podcasts Connect, a custom domain, or a podcast-hosting account.
 
-The bucket stays private. Escape Pod Cast relays authenticated audio from B2 to your podcast application, so you do **not** need to pay to enable a public bucket.
+## 1. Download the tool
 
-## 1. Create a free Backblaze account
+On your Mac, [download the repository ZIP](https://github.com/udeudeude/Escape-Pod-Cast/archive/refs/heads/main.zip) and unzip it. The installation copies the program into your Application Support folder, so the download folder can be removed afterward.
 
-Go to:
+The only required local runtime is **Python 3**. If the installer says it is missing, install the macOS package from [python.org](https://www.python.org/downloads/macos/), then try again. No Python packages are needed. If it raises a certificate verification error, run the Python installer's **Install Certificates.command** from its Applications folder. Python should be supported by your installed macOS version.
 
-**https://www.backblaze.com/sign-up/cloud-storage**
+## 2. Create a repository-restricted GitHub credential
 
-Create the account and verify your email address. No credit card is required to start.
+Open [GitHub's new fine-grained token page](https://github.com/settings/personal-access-tokens/new).
 
-If B2 Cloud Storage is not already enabled, open **My Settings → Enabled Products** and enable **B2 Cloud Storage**.
+1. Give it a name such as **Escape Pod Cast Mac**.
+2. Choose an expiration appropriate for you. Expiration means you must replace it later; an expired token cannot publish or clean up audio.
+3. Under **Repository access**, choose **Only select repositories**, then **Escape-Pod-Cast**.
+4. Add these repository permissions: **Contents: Read and write**, **Pages: Read and write**, **Administration: Read and write**. Metadata read access is automatic. Administration is required by GitHub's endpoint that enables/configures Pages; the program uses it for that setup operation only.
+5. Generate the token and copy it. Paste it only into the installer on your Mac, not into this chat.
 
-## 2. Create a private bucket
+The token is stored in macOS Keychain, not in the repository, feed, configuration file, command-line arguments, or log. You can revoke it from the same GitHub settings page. For stricter permissions after setup, remove Administration from the token; normal publishing and cleanup need Contents access. You would have to restore Administration to run setup again if Pages needs reconfiguration.
 
-1. Open **B2 Cloud Storage → Buckets**.
-2. Choose **Create a Bucket**.
-3. Give it a globally unique name, for example `escape-pod-cast-yourname`.
-4. Leave **Files in Bucket: Private**.
-5. You do not need Object Lock.
-6. Create the bucket.
-7. Copy its **Endpoint**. It looks like:
+## 3. Run the installer
 
-```
-s3.us-west-004.backblazeb2.com
-```
+Open **Install.command** in the extracted folder. If macOS blocks it, use the system's **Open Anyway** option for this downloaded file. If Finder opens it as text or says it is not executable, open Terminal, type `bash `, drag **Install.command** into the Terminal window, and press Return.
 
-For Escape Pod Cast:
+1. Press Return to accept `udeudeude/Escape-Pod-Cast` as your repository.
+2. Paste the GitHub token when asked. The terminal hides your input.
+3. Approve any macOS Keychain prompt for this program.
 
-- **STORAGE_ENDPOINT** = `https://` plus that endpoint
-- **STORAGE_REGION** = the region embedded in it, e.g. `us-west-004`
-- **STORAGE_BUCKET** = your bucket name
+The installer:
 
-## 3. Create a bucket-specific application key
+1. Confirms that your repository is public and uses `main`.
+2. Creates a single **audio** release if needed.
+3. Enables GitHub Pages from **main → /docs**.
+4. Creates **Escape Pod Cast.app** in your personal Applications folder.
+5. Installs a per-user folder monitor and cleanup job that starts on login.
+6. Opens the app's location and your feed-address file, and copies the feed address to your clipboard.
 
-1. Open **B2 Cloud Storage → Application Keys**.
-2. Choose **Add a New Application Key**.
-3. Name it `escape-pod-cast`.
-4. Restrict it to the bucket you just created.
-5. Give it **Read and Write** access.
-6. Enable **Allow List All Bucket Names** if Backblaze presents that option. Backblaze recommends this for S3-compatible bucket-restricted keys.
-7. Create the key.
-8. Copy both values immediately:
-   - **keyID** → **STORAGE_ACCESS_KEY_ID**
-   - **applicationKey** → **STORAGE_SECRET_ACCESS_KEY**
+You can drag the app into your Dock. Double-clicking it opens the watched folder. Dragging files onto the icon publishes them in the background.
 
-Backblaze displays the applicationKey only once.
+Files and logs live in `~/Library/Application Support/Escape Pod Cast/`. Your app is `~/Applications/Escape Pod Cast.app`. The installation is per-user and does not need administrator privileges.
 
-## 4. Deploy the machine on Render
+## 4. Follow it once on the iPhone
 
-Use:
+After a few minutes, open your feed address in a browser to confirm that Pages is serving XML rather than a missing-page error. For this repository, the address is:
 
-**https://render.com/deploy?repo=https://github.com/udeudeude/Escape-Pod-Cast**
+`https://udeudeude.github.io/Escape-Pod-Cast/feed.xml`
 
-The repository requests a **free** Render web service and **no persistent disk**.
+On your iPhone:
 
-When Render asks for variables, enter:
+1. Open **Apple Podcasts → Library → ••• → Follow a Show by URL**.
+2. Paste the feed address. If Apple rejects the empty feed, publish your first short audio file and try again after Pages updates.
+3. Enable automatic episode downloads for this show.
 
-| Variable | Value |
-| --- | --- |
-| `ADMIN_PASSWORD` | A password you choose for your uploader |
-| `STORAGE_ENDPOINT` | e.g. `https://s3.us-west-004.backblazeb2.com` |
-| `STORAGE_REGION` | e.g. `us-west-004` |
-| `STORAGE_ACCESS_KEY_ID` | Backblaze `keyID` |
-| `STORAGE_SECRET_ACCESS_KEY` | Backblaze `applicationKey` |
-| `STORAGE_BUCKET` | Your bucket name |
+The feed is not submitted to Apple's catalog. Its contents and audio are publicly accessible through GitHub.
 
-Render generates **FEED_TOKEN** automatically. Do not change it later unless you deliberately want a new feed URL.
+## 5. Test with one small audio file
 
-You may also customize **SHOW_TITLE**, **SHOW_DESCRIPTION**, and **AUTHOR**.
+Drop a short MP3 or M4A onto the app. Wait for its completion message. Check that the episode appears and actually downloads in Apple Podcasts. Apple controls refresh timing; check the show manually if automatic refresh has not happened yet.
 
-## 5. Subscribe
+Do not assume that seeing a title proves a download completed. Check that playback works with your iPhone offline. This first Mac/iPhone test also verifies the native app, your credential, Pages publication, release delivery, and Apple behavior together.
 
-Open your deployed Render URL.
+Before relying on two-week expiry for important recordings, save/download an episode, then test its survival after remote expiry. Apple Podcasts' local retention settings are separate from this tool's cleanup.
 
-Your browser will ask for a username and password. The username can be anything; the password is your **ADMIN_PASSWORD**.
+## If something fails
 
-The page shows your secret podcast feed URL. Add it to your podcast application using **Follow a Show by URL**, **Add Podcast by URL**, or equivalent.
+Open **Status.log** in the Application Support folder. Retry the original failed file after fixing the problem; a completed upload is reused. The watched folder leaves failed originals in place and retries automatically. Files successfully published from that folder move into its **Published** subfolder. Keep that subfolder or move originals elsewhere as you prefer; it is not automatically deleted.
 
-## 6. Publish
+1. **Token expired or GitHub rejected access:** run Install.command with a replacement credential.
+2. **Feed URL gives 404:** check [Pages settings](https://github.com/udeudeude/Escape-Pod-Cast/settings/pages) for main and /docs, then wait for publication.
+3. **Audio conversion failed:** use a supported input or optionally install ffmpeg. If you already use Homebrew, `brew install ffmpeg` adds the converter and codec probe. Never publish an incompatible format merely by renaming its extension.
+4. **HEAD or byte-range validation failed:** audio was not added to the feed. Retry; if it persists, investigate the host's delivery behavior before assuming Apple will accept it.
+5. **Network unavailable:** leave the folder upload in place or retry the app drop later. The Mac must be awake and connected to publish or delete expired audio.
+6. **Repeated identical audio:** identical files deduplicate while online. Rename alone does not create a new episode. Publish different bytes if a distinct episode is needed.
 
-Drop an audio file into Escape Pod Cast, edit its title or notes if desired, and tap **Publish**.
+## Remove the local installation
 
-The file streams into your private B2 bucket. Escape Pod Cast updates the metadata object in the same bucket. Your podcast feed immediately contains the episode.
+Unload the per-user job in Terminal:
 
-## Architecture
-
-```
-phone / Mac
-    |
-    | upload
-    v
-Escape Pod Cast on free Render
-    |
-    | authenticated S3-compatible API
-    v
-private Backblaze B2 bucket
-    ^
-    |
-Escape Pod Cast relays audio with HTTP byte-range support
-    |
-podcast app
+```sh
+launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.escapepodcast.publisher.plist"
 ```
 
-Render's filesystem is disposable. Your library survives because the audio and episode metadata live in B2.
+Then remove the app, that LaunchAgents file, and the Escape Pod Cast Application Support folder after preserving any local originals you want. Delete the **Escape Pod Cast GitHub** credential in Keychain Access, and revoke its token in GitHub settings. Uninstalling stops remote cleanup; delete remaining temporary assets in the repository's **audio** release yourself if desired.
 
-## Other object-storage providers
-
-Escape Pod Cast is intentionally provider-neutral. It uses the S3-compatible API. If you prefer Cloudflare R2 or another compatible provider, use its endpoint, region, access key, secret, and bucket in the same five `STORAGE_*` variables.
-
-Cloudflare R2 works, but Cloudflare currently requires a billing method to activate R2 even when usage remains inside its free allowance. That is why Backblaze B2 is the default setup.
+The previous server implementation is removed from the current GitHub branch. If you deployed it separately, this installer does not delete that remote service or storage bucket.
