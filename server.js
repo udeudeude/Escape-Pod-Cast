@@ -152,7 +152,7 @@ async function podcastFeed(req, res, token) {
   const base = origin(req);
   const episodes = (await loadEpisodes()).sort((a,b) => new Date(b.publishedAt)-new Date(a.publishedAt));
   const items = episodes.map(e => `<item><title>${xml(e.title)}</title><guid isPermaLink="false">${xml(e.id)}</guid><pubDate>${new Date(e.publishedAt).toUTCString()}</pubDate><description>${xml(e.description || e.originalName || e.title)}</description><enclosure url="${xml(`${base}/media/${encodeURIComponent(FEED_TOKEN)}/${encodeURIComponent(e.file)}`)}" length="${Number(e.size)||0}" type="${xml(e.mime || mimeFor(e.file))}"/>${e.duration ? `<itunes:duration>${Math.round(e.duration)}</itunes:duration>` : ''}</item>`).join('\n');
-  const body = `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"><channel><title>${xml(SHOW_TITLE)}</title><link>${xml(base)}</link><description>${xml(SHOW_DESCRIPTION)}</description><language>en-us</language><itunes:author>${xml(AUTHOR)}</itunes:author><itunes:explicit>false</itunes:explicit><itunes:type>episodic</itunes:type><itunes:category text="Society &amp; Culture"/><atom:link href="${xml(feedUrl(req))}" rel="self" type="application/rss+xml"/>${items}</channel></rss>`;
+  const body = `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"><channel><title>${xml(SHOW_TITLE)}</title><link>${xml(base)}</link><description>${xml(SHOW_DESCRIPTION)}</description><language>en-us</language><itunes:author>${xml(AUTHOR)}</itunes:author><itunes:explicit>false</itunes:explicit><itunes:type>episodic</itunes:type><itunes:category text="Society &amp; Culture"/><itunes:image href="${xml(`${base}/assets/cover.png`)}"/><atom:link href="${xml(feedUrl(req))}" rel="self" type="application/rss+xml"/>${items}</channel></rss>`;
   res.writeHead(200, { 'Content-Type':'application/rss+xml; charset=utf-8', 'Content-Length':Buffer.byteLength(body), 'Cache-Control':'no-store' }); res.end(body);
 }
 
@@ -178,9 +178,9 @@ async function serveMedia(req, res, token, filename) {
 }
 
 async function serveAsset(name, req, res) {
-  if (!['app.css','app.js','favicon.svg'].includes(name)) return text(res,404,'Not found');
+  if (!['app.css','app.js','favicon.svg','cover.png'].includes(name)) return text(res,404,'Not found');
   const full = path.join(__dirname,'public',name); let stat; try { stat=await fs.stat(full); } catch { return text(res,404,'Not found'); }
-  const type = name.endsWith('.css')?'text/css; charset=utf-8':name.endsWith('.js')?'text/javascript; charset=utf-8':'image/svg+xml';
+  const type = name.endsWith('.css')?'text/css; charset=utf-8':name.endsWith('.js')?'text/javascript; charset=utf-8':name.endsWith('.png')?'image/png':'image/svg+xml';
   res.writeHead(200,{'Content-Type':type,'Content-Length':stat.size,'Cache-Control':'public, max-age=86400'}); if(req.method==='HEAD') return res.end(); fsSync.createReadStream(full).pipe(res);
 }
 function redirect(res, location){ res.writeHead(303,{Location:location}); res.end(); }
