@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: escape-pod-cast
+    runtime: node
+    plan: starter
+    buildCommand: echo "No build step"
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: DATA_DIR
+        value: /var/data/personal-podcast
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: FEED_TOKEN
+        generateValue: true
+      - key: SHOW_TITLE
+        value: Escape Pod Cast
+      - key: SHOW_DESCRIPTION
+        value: My personal audio feed.
+      - key: AUTHOR
+        value: Personal
+      - key: MAX_UPLOAD_MB
+        value: 300
+    disk:
+      name: podcast-data
+      mountPath: /var/data
+      sizeGB: 10
