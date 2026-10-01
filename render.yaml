@@ -2,19 +2,27 @@ services:
   - type: web
     name: escape-pod-cast
     runtime: node
-    plan: starter
-    buildCommand: echo "No build step"
+    plan: free
+    buildCommand: npm install
     startCommand: npm start
     healthCheckPath: /health
     envVars:
       - key: NODE_VERSION
         value: 22
-      - key: DATA_DIR
-        value: /var/data/personal-podcast
       - key: ADMIN_PASSWORD
         sync: false
       - key: FEED_TOKEN
         generateValue: true
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: R2_PUBLIC_BASE_URL
+        sync: false
       - key: SHOW_TITLE
         value: Escape Pod Cast
       - key: SHOW_DESCRIPTION
@@ -23,7 +31,3 @@ services:
         value: Personal
       - key: MAX_UPLOAD_MB
         value: 300
-    disk:
-      name: podcast-data
-      mountPath: /var/data
-      sizeGB: 10
