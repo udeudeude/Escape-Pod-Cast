@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -29,6 +30,17 @@ NS = 'http://www.itunes.com/dtds/podcast-1.0.dtd'
 ET.register_namespace('itunes', NS)
 RETENTION = dt.timedelta(days=14)
 MEDIA_NAME = re.compile(r'^epc-[0-9a-f]{64}\.(mp3|m4a)$')
+FEED_SETTINGS = 'escape-pod-cast.json'
+LEGACY_FEED = 'docs/feed.xml'
+FEED_PATH = re.compile(r'^docs/feeds/[0-9a-f]{48}/feed\.xml$')
+SITE_INDEX = '''<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<meta name="robots" content="noindex, nofollow">
+<title>Escape Pod Cast</title><h1>Escape Pod Cast</h1>
+<p>Use the Mac app's Copy podcast link action to follow your show.</p>
+<p>The feed has a random address. The repository and audio are publicly accessible.</p>
+</html>
+'''
 
 
 class Failure(RuntimeError):
@@ -111,6 +123,7 @@ class GitHub:
     def __init__(self, repo, token):
         self.repo, self.token = repo, token
         self.base = 'https://api.github.com/repos/' + repo
+        self.feed_path = None
 
     def headers(self):
         return {'Authorization': 'Bearer ' + self.token,
@@ -186,15 +199,83 @@ class GitHub:
         finally:
             connection.close()
 
+    def content(self, path, ref='main', missing=False):
+        return self.request('GET', '/contents/' + urllib.parse.quote(path, safe='/') +
+                            '?ref=' + urllib.parse.quote(ref, safe=''), missing=missing)
+
+    def feed_setting(self, item):
+        if item is None:
+            return None
+        settings = json.loads(base64.b64decode(item['content']))
+        if settings.get('repo', '').lower() != self.repo.lower():
+            return None  # A fork must create its own feed, not use its parent's.
+        path = settings.get('feed_path', '')
+        if settings.get('version') != 1 or not FEED_PATH.fullmatch(path):
+            raise Failure('The repository feed settings are invalid. Restore them before publishing.')
+        return path
+
     def read_feed(self):
-        item = self.request('GET', '/contents/docs/feed.xml?ref=main')
+        if self.feed_path is None:
+            settings = self.content(FEED_SETTINGS, missing=True)
+            self.feed_path = self.feed_setting(settings) or LEGACY_FEED
+        item = self.content(self.feed_path)
         return ET.fromstring(base64.b64decode(item['content'])), item['sha']
 
     def write_feed(self, root, sha):
         content = ET.tostring(root, encoding='utf-8', xml_declaration=True)
-        return self.request('PUT', '/contents/docs/feed.xml', {
+        if self.feed_path is None:
+            self.read_feed()
+        return self.request('PUT', '/contents/' + self.feed_path, {
             'message': 'Update personal podcast episodes', 'branch': 'main',
             'sha': sha, 'content': base64.b64encode(content).decode()})
+
+    def initialize_feed(self):
+        # Migrate the feed and remove its predictable route in one commit.
+        # A concurrent publish prevents the branch move; retry from a fresh
+        # snapshot rather than overwriting an episode or losing the old feed.
+        parent = self.request('GET', '/git/ref/heads/main')['object']['sha']
+        settings_item = self.content(FEED_SETTINGS, ref=parent, missing=True)
+        existing = self.feed_setting(settings_item)
+        if existing:
+            self.feed_path = existing
+            self.read_feed()  # Preserve the address; fail if its feed is missing.
+            return existing
+        legacy = self.content(LEGACY_FEED, ref=parent, missing=True)
+        inherited_path = None
+        inherited = None
+        if settings_item:
+            inherited_path = json.loads(base64.b64decode(settings_item['content'])).get('feed_path', '')
+            if FEED_PATH.fullmatch(inherited_path):
+                inherited = self.content(inherited_path, ref=parent, missing=True)
+        source = legacy or inherited
+        root = (ET.fromstring(base64.b64decode(source['content'])) if source else new_feed())
+        # Forks copy files and history, not Release assets. Keep only episodes
+        # hosted by the selected repository, never someone else's copied show.
+        own_audio = 'https://github.com/' + self.repo + '/releases/download/'
+        for item in list(channel(root).findall('item')):
+            enclosure = item.find('enclosure')
+            if enclosure is None or not enclosure.get('url', '').lower().startswith(own_audio.lower()):
+                channel(root).remove(item)
+        channel(root).find('link').text = 'https://github.com/' + self.repo
+        path = 'docs/feeds/' + secrets.token_hex(24) + '/feed.xml'
+        settings = {'version': 1, 'repo': self.repo, 'feed_path': path}
+        entries = [{'path': path, 'mode': '100644', 'type': 'blob',
+                    'content': ET.tostring(root, encoding='unicode', xml_declaration=True)},
+                   {'path': FEED_SETTINGS, 'mode': '100644', 'type': 'blob',
+                    'content': json.dumps(settings, indent=2) + '\n'},
+                   {'path': 'docs/index.html', 'mode': '100644', 'type': 'blob',
+                    'content': SITE_INDEX}]
+        for old_path, old_item in ((LEGACY_FEED, legacy), (inherited_path, inherited)):
+            if old_item:
+                entries.append({'path': old_path, 'mode': '100644', 'type': 'blob', 'sha': None})
+        commit = self.request('GET', '/git/commits/' + parent)
+        tree = self.request('POST', '/git/trees', {'base_tree': commit['tree']['sha'], 'tree': entries})
+        created = self.request('POST', '/git/commits', {
+            'message': 'Give this podcast its own random feed address',
+            'tree': tree['sha'], 'parents': [parent]})
+        self.request('PATCH', '/git/refs/heads/main', {'sha': created['sha'], 'force': False})
+        self.feed_path = path
+        return path
 
 
 def stamp(value):
@@ -206,6 +287,19 @@ def channel(root):
     if result is None:
         raise Failure('The remote feed is missing its channel.')
     return result
+
+
+def new_feed():
+    root = ET.Element('rss', {'version': '2.0'})
+    parent = ET.SubElement(root, 'channel')
+    for name, value in (
+            ('title', 'Escape Pod Cast'), ('link', 'https://github.com/'),
+            ('description', 'Audio dropped from my Mac. Remote audio expires after 14 days.'),
+            ('language', 'en-us'), ('{%s}author' % NS, 'Escape Pod Cast'),
+            ('{%s}explicit' % NS, 'false'), ('{%s}block' % NS, 'Yes'),
+            ('{%s}type' % NS, 'episodic')):
+        ET.SubElement(parent, name).text = value
+    return root
 
 
 def add_episode(root, asset, title, now):
@@ -378,6 +472,11 @@ def get_token(repo):
 
 
 def setup(repo, token=None, progress=None):
+    with locked():
+        return setup_locked(repo, token, progress)
+
+
+def setup_locked(repo, token=None, progress=None):
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo):
         raise Failure('Repository must be owner/name.')
     if token is None:
@@ -393,7 +492,6 @@ def setup(repo, token=None, progress=None):
     metadata = client.request('GET', '')
     if metadata['private'] or metadata['default_branch'] != 'main':
         raise Failure('This version requires a public repository with main as default branch.')
-    client.read_feed()
     report('Preparing temporary audio storage…')
     release = client.request('GET', '/releases/tags/audio', missing=True)
     if release is None:
@@ -410,6 +508,8 @@ def setup(repo, token=None, progress=None):
     elif pages.get('source') != source or pages.get('build_type') != 'legacy':
         client.request('PUT', '/pages', {'build_type': 'legacy', 'source': source})
         pages = client.request('GET', '/pages')
+    report('Preparing your random podcast address…')
+    feed_path = client.initialize_feed()
     # security's interactive command input keeps the credential out of argv.
     # Tokens use a restricted alphabet, so quoting this command is unambiguous.
     report('Saving your connection in Mac Keychain…')
@@ -423,12 +523,13 @@ def setup(repo, token=None, progress=None):
     if get_token(repo) != token:
         raise Failure('Keychain verification failed.')
     HOME.mkdir(parents=True, exist_ok=True)
-    feed_url = pages['html_url'].rstrip('/') + '/feed.xml'
-    CONFIG.write_text(json.dumps({'repo': repo, 'feed_url': feed_url}, indent=2))
+    feed_url = pages['html_url'].rstrip('/') + '/' + feed_path[len('docs/'):]
+    config = {'repo': repo, 'feed_url': feed_url, 'feed_path': feed_path}
+    CONFIG.write_text(json.dumps(config, indent=2))
     (HOME / 'Feed URL.txt').write_text(feed_url + '\n')
     print('\nFollow this once in Apple Podcasts:\n' + feed_url +
           '\nPages may take a few minutes to publish. Enable automatic downloads.')
-    return {'repo': repo, 'feed_url': feed_url}
+    return config
 
 
 @contextlib.contextmanager

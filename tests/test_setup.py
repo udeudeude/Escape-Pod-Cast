@@ -67,6 +67,9 @@ class SetupTests(unittest.TestCase):
             def read_feed(self):
                 return None
 
+            def initialize_feed(self):
+                return 'docs/feeds/' + 'a' * 48 + '/feed.xml'
+
             def request(self, method, path, body=None, missing=False):
                 nonlocal get_count
                 calls.append((method, path))
@@ -91,7 +94,7 @@ class SetupTests(unittest.TestCase):
                   patch.object(publisher.subprocess, 'run', return_value=result) as run,
                   patch.object(publisher.getpass, 'getpass', side_effect=AssertionError('terminal prompt'))):
                 config = publisher.setup('owner/show', 'github_pat_fake', progress=lambda _: None)
-            self.assertEqual(config['feed_url'], 'https://owner.github.io/show/feed.xml')
+            self.assertEqual(config['feed_url'], 'https://owner.github.io/show/feeds/' + 'a' * 48 + '/feed.xml')
             self.assertEqual(json.loads((home / 'config.json').read_text()), config)
             self.assertNotIn('github_pat_fake', (home / 'config.json').read_text())
             self.assertEqual(calls[-2:], [('PUT', '/pages'), ('GET', '/pages')])

@@ -16,12 +16,7 @@ NOW = dt.datetime(2026, 10, 1, tzinfo=dt.timezone.utc)
 
 
 def feed():
-    root = ET.parse(Path(__file__).parents[1] / 'docs/feed.xml').getroot()
-    # The repository's live feed may already contain published episodes.
-    # Each test starts with its own empty feed, without changing that file.
-    for item in list(p.channel(root).findall('item')):
-        p.channel(root).remove(item)
-    return root
+    return p.new_feed()
 
 
 def asset(name='epc-' + 'a' * 64 + '.mp3', age=0):

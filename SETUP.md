@@ -8,16 +8,24 @@ If you downloaded an earlier version without START-HERE.command, download the cu
 
 ## What the windows ask you to do
 
-Click **Install**. Your repository is already selected. Use **Other Repository** only for an independent copy.
+For a new installation, choose **Create My Copy**. On the GitHub page that opens:
+
+1. Sign in to your own GitHub account.
+2. Choose your account as **Owner**, keep **Escape-Pod-Cast** as the name or choose another, and click **Create fork**.
+3. Return to setup and enter the owner/repository shown at the top of your copy, for example `yourname/Escape-Pod-Cast`.
+
+Choose **Use Existing** if you already have your own copy. An existing installation offers **Update**, with its repository already selected and its saved token reused.
 
 If you already created a token, choose **Paste Token** and reuse it. Otherwise choose **Open GitHub**; the token page has the name, owner, expiration, and required permissions filled in. On GitHub:
 
 1. Sign in if asked.
-2. Under **Repository access**, choose **Only select repositories** and select **Escape-Pod-Cast**.
+2. Under **Repository access**, choose **Only select repositories** and select the copy you just created.
 3. Click **Generate token**, then copy the token.
 4. Return to the Escape Pod Cast window, paste it into the hidden field, and click **Connect**.
 
-The installer checks the connection, stores the token in Mac Keychain, creates the temporary audio release, configures GitHub Pages, and installs the app. Connection failures appear in a setup window with a retry option. **Try Again** keeps the same credential; choose **Replace Token** only when you need a different one. Reinstalling uses a still-working saved connection instead of asking you to create another credential.
+The installer checks the connection, stores the token in Mac Keychain, creates the temporary audio release, configures GitHub Pages, generates your random feed address, and installs the app. Each copy gets its own address and starts without the original owner's episodes. Connection failures appear in a setup window with a retry option. **Try Again** keeps the same credential; choose **Replace Token** only when you need a different one. Reinstalling uses a still-working saved connection instead of asking you to create another credential, and keeps your feed address.
+
+**Updating from the old predictable address:** choose **Update**. Your existing episodes and audio remain, but `/feed.xml` is removed and replaced with your random address. Follow the new link in Apple Podcasts; setup copies it to the clipboard. Allow a few minutes for GitHub Pages to publish the change. The app's **Copy podcast link** action uses the new address too.
 
 GitHub requires authorization before your Mac can upload to your account. No other account or payment method is involved. The token is not placed in process command arguments, the repository, feed, or log. It expires after one year with the prefilled default; you can choose a different expiration on GitHub. Administration permission is used only to configure Pages. Normal publishing and cleanup need Contents access.
 
@@ -45,14 +53,14 @@ The app is at `~/Applications/Escape Pod Cast.app`. Its program, watched folder,
 
 Originals dropped onto the app are untouched. Successful watched-folder uploads move into its **Published** subfolder. Audio is removed from GitHub after 14 days, with cleanup catching up when the Mac wakes. Preserve important originals until you have verified Apple Podcasts' local retention behavior after remote expiry.
 
-The feed and audio are **publicly accessible** through GitHub. This is an unlisted personal feed, not authenticated private storage. Nothing is submitted to Apple's catalog.
+Your feed address contains 48 random hexadecimal characters and is not linked from the site's landing page. It resists guessing, but its path is visible in your **public** GitHub repository and the audio is public in Releases. This is an unlisted personal feed, not authenticated private storage. Nothing is submitted to Apple's catalog.
 
 ## If something fails
 
 Open **Status.log** in the Application Support folder. Retry the original failed file after fixing the problem; a completed upload is reused. The watched folder leaves failed originals in place and retries automatically. Files successfully published from that folder move into its **Published** subfolder. Keep that subfolder or move originals elsewhere as you prefer; it is not automatically deleted.
 
 1. **Token expired or GitHub rejected access:** run START-HERE.command to reconnect.
-2. **Feed URL gives 404:** check [Pages settings](https://github.com/udeudeude/Escape-Pod-Cast/settings/pages) for main and /docs, then wait for publication.
+2. **Feed URL gives 404:** use the app's **Copy podcast link** action to get the current random address. Open your own repository's **Settings → Pages**, check main and /docs, then wait for publication. The old `/feed.xml` address stops working after migration.
 3. **Audio conversion failed:** use a supported input or optionally install ffmpeg. If you already use Homebrew, `brew install ffmpeg` adds the converter and codec probe. Never publish an incompatible format merely by renaming its extension.
 4. **HEAD or byte-range validation failed:** audio was not added to the feed. Retry; if it persists, investigate the host's delivery behavior before assuming Apple will accept it.
 5. **Network unavailable:** leave the folder upload in place or retry the app drop later. The Mac must be awake and connected to publish or delete expired audio.

@@ -4,7 +4,7 @@
 
 Your Mac prepares the audio and updates a static feed. Your existing GitHub account hosts the feed on Pages and the temporary audio as Release assets. No application server, database, storage provider, additional account, or payment method.
 
-[Download](https://github.com/udeudeude/Escape-Pod-Cast/archive/refs/heads/main.zip), unzip, and double-click **START-HERE.command**. The guided Mac setup opens GitHub with permission fields filled in and handles the connection, app installation, and feed setup. [More setup help →](SETUP.md)
+[Download](https://github.com/udeudeude/Escape-Pod-Cast/archive/refs/heads/main.zip), unzip, and double-click **START-HERE.command**. New users choose **Create My Copy**: setup opens GitHub's fork page, then connects their own copy. Existing installations choose **Update** and reuse their saved connection. Setup handles app installation and gives each repository its own random podcast address. [More setup help →](SETUP.md)
 
 ## Everyday use
 
@@ -19,7 +19,7 @@ Opening the app also offers **Add audio…**, **Open drop folder**, **Copy podca
 | Participant | Job |
 | --- | --- |
 | Mac | File intake, audio preparation, feed update, upload, cleanup |
-| GitHub | Pages serves `feed.xml`; one `audio` release holds temporary audio |
+| GitHub | Pages serves the feed at a random address; one `audio` release holds temporary audio |
 | iPhone / Apple Podcasts | Follows the feed URL directly and downloads episodes |
 
 The local program needs Python 3 and uses its standard library. No package installation, Git commands, GitHub command-line tool, or web application is needed for everyday use. macOS provides the app compiler, Keychain credential storage, audio converter, and scheduled folder monitor. Network requests on macOS use the included curl tool, keeping setup and publishing on the same network path. Optional ffmpeg expands supported audio formats.
@@ -36,7 +36,11 @@ After 14 days, cleanup removes the feed item and deletes its Release asset. It r
 
 ## Visibility
 
-This is an **unlisted, publicly accessible personal feed**, not an authenticated private feed. Anyone who browses the public repository can read the feed and find the audio. A random URL in a public repository would not fix that. `itunes:block` prevents catalog processing; it does not restrict file access. Nothing is submitted to Apple Podcasts Connect.
+Each repository gets a stable address of the form `https://owner.github.io/repository/feeds/<48 random hexadecimal characters>/feed.xml`, generated with 192 bits of randomness. It resists guessing. Setup does not publish a feed link on the site's landing page; use the app's **Copy podcast link** action. Reinstalling keeps the same address.
+
+This is an **unlisted, publicly accessible personal feed**, not an authenticated private feed. The address and feed are visible in the public repository, and Release assets are public. Anyone browsing GitHub can find them; randomness does not provide secrecy from that person. `itunes:block` prevents catalog processing; it does not restrict file access. Nothing is submitted to Apple Podcasts Connect.
+
+Updating an older installation migrates its episodes and removes the predictable `/feed.xml` file in one commit. Follow the new address in Apple Podcasts afterward. Its episodes keep their identifiers and audio URLs. A concurrent publisher prevents migration from overwriting its changes; retry setup. Historical commits remain publicly accessible.
 
 ## Testing and scope
 
@@ -46,6 +50,6 @@ The obsolete Node server, browser uploader, Render blueprint, object-storage dep
 
 ## Independent copies
 
-For someone else's installation, fork this repository, use that public fork during setup, and follow its feed URL. Each person's Mac and GitHub account operate independently. There is no shared service operated by the author. Use one publishing Mac per feed.
+The same download is for every Mac user. The installer guides **Create My Copy**, or **Use Existing** for a repository already created. It never defaults a new user to the author's publishing repository. A fork gets a new random address and a feed without the parent's copied episodes. Each person's Mac, GitHub repository, Release assets, and saved credential operate independently. There is no shared service operated by the author. Use one publishing Mac per feed. This distribution currently supports macOS.
 
 MIT license.

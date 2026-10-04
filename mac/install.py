@@ -15,7 +15,7 @@ HERE = Path(__file__).resolve().parent
 HOME = Path.home() / 'Library/Application Support/Escape Pod Cast'
 APP = Path.home() / 'Applications/Escape Pod Cast.app'
 AGENT = Path.home() / 'Library/LaunchAgents/com.escapepodcast.publisher.plist'
-DEFAULT_REPO = 'udeudeude/Escape-Pod-Cast'
+SOURCE_REPO = 'udeudeude/Escape-Pod-Cast'
 
 
 class Cancelled(Exception):
@@ -66,9 +66,43 @@ def token_url(repo):
     })
 
 
-def connect(repo):
+def choose_repository(config=None):
+    if config:
+        action, _ = dialog('Update Escape Pod Cast for your existing feed?\n\n'
+                           'Repository: %s\n\n'
+                           'Setup keeps your episodes and saved connection. If needed, it replaces '
+                           'the old predictable feed address with a random one.' % config['repo'],
+                           buttons=('Cancel', 'Other Repository', 'Update'))
+        if action == 'Update':
+            return config['repo']
+    action, _ = dialog('Escape Pod Cast turns audio on your Mac into episodes in Apple Podcasts.\n\n'
+                       'Each person uses their own GitHub account and repository. '
+                       'No payment method or shared publishing service is needed.\n\n'
+                       'Your feed gets a random address. The repository and audio remain public.\n\n'
+                       'Create your own copy, or connect a copy you already have.',
+                       buttons=('Cancel', 'Use Existing', 'Create My Copy'))
+    if action == 'Create My Copy':
+        subprocess.run(['/usr/bin/open', 'https://github.com/' + SOURCE_REPO + '/fork'], check=True)
+        message = ('On GitHub:\n'
+                   '1. Sign in to your own account.\n'
+                   '2. Choose your account as Owner; keep the repository name or choose your own.\n'
+                   '3. Click “Create fork”.\n\n'
+                   'Then enter the owner/repository shown at the top of your new copy, '
+                   'for example yourname/Escape-Pod-Cast.')
+    else:
+        message = 'Enter your GitHub copy as owner/repository, for example yourname/Escape-Pod-Cast.'
+    while True:
+        _, repo = dialog(message, text='', buttons=('Cancel', 'Continue'))
+        repo = repo.strip()
+        if publisher.re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo):
+            return repo
+        message = 'Enter both parts, separated by /, for example yourname/Escape-Pod-Cast.'
+
+
+def connect(repo, token=None):
     owner, name = repo.split('/', 1)
-    action, _ = dialog('One connection to GitHub is needed so this Mac can publish your audio.\n\n'
+    if token is None:
+        action, _ = dialog('One connection to GitHub is needed so this Mac can publish your audio.\n\n'
            'The next screen opens GitHub with the name and permissions filled in.\n\n'
            'On GitHub:\n'
            '1. Sign in as %s if asked.\n'
@@ -76,9 +110,8 @@ def connect(repo):
            '3. Click “Generate token”, then copy the token.\n\n'
            'If you already created a token, choose “Paste Token” to use it.' % (owner, name),
            buttons=('Cancel', 'Open GitHub', 'Paste Token'))
-    if action == 'Open GitHub':
-        subprocess.run(['/usr/bin/open', token_url(repo)], check=True)
-    token = None
+        if action == 'Open GitHub':
+            subprocess.run(['/usr/bin/open', token_url(repo)], check=True)
     while True:
         if token is None:
             action, pasted = dialog('Paste your existing GitHub token here.\n\n'
@@ -187,30 +220,18 @@ def main():
             config = json.loads(publisher.CONFIG.read_text())
         except (OSError, ValueError):
             pass
-    repo = config['repo'] if config else DEFAULT_REPO
-    button, _ = dialog('This installs Escape Pod Cast on your Mac.\n\n'
-                       'After setup, drop audio onto the app to publish it for Apple Podcasts.\n\n'
-                       'Your GitHub repository: %s\n'
-                       'No payment method or other service is needed.\n\n'
-                       'The feed and audio are publicly accessible, outside Apple’s catalog.' % repo,
-                       buttons=('Cancel', 'Other Repository', 'Install'))
-    if button == 'Other Repository':
-        _, repo = dialog('Enter the GitHub repository for your own feed.',
-                         text=repo)
-        repo = repo.strip()
-        if repo != (config or {}).get('repo'):
-            config = None
+    previous_url = (config or {}).get('feed_url')
+    repo = choose_repository(config)
     if not publisher.re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo):
         raise RuntimeError('Enter a repository in the form owner/name.')
-    if config is not None:
+    token = None
+    if config is not None and repo == config.get('repo'):
         # Reinstall without making the user create another working credential.
         try:
-            client = publisher.GitHub(repo, publisher.get_token(repo))
-            client.request('GET', '')
+            token = publisher.get_token(repo)
         except (publisher.Failure, OSError, ValueError):
-            config = None
-    if config is None:
-        config = connect(repo)
+            pass
+    config = connect(repo, token)
     notify('Creating your Mac app…')
     install_app(config)
     subprocess.run(['/usr/bin/pbcopy'], input=config['feed_url'].encode(), check=True)
@@ -224,6 +245,9 @@ def main():
         pass
     status = ('Your feed is online.' if ready else
               'GitHub is preparing your feed; allow a few minutes before following it.')
+    if previous_url and previous_url != config['feed_url']:
+        status += ('\n\nYour podcast address has changed. Follow this new link in Apple Podcasts. '
+                   'The old predictable feed is removed; existing episodes are kept.')
     button, _ = dialog('Your Mac app is installed.\n\n'
                        '1. Open the app and choose “Add audio…” for your first file.\n'
                        '2. On iPhone: Apple Podcasts → Library → ••• → Follow a Show by URL.\n'
