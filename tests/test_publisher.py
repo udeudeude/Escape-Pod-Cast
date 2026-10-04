@@ -16,7 +16,12 @@ NOW = dt.datetime(2026, 10, 1, tzinfo=dt.timezone.utc)
 
 
 def feed():
-    return ET.parse(Path(__file__).parents[1] / 'docs/feed.xml').getroot()
+    root = ET.parse(Path(__file__).parents[1] / 'docs/feed.xml').getroot()
+    # The repository's live feed may already contain published episodes.
+    # Each test starts with its own empty feed, without changing that file.
+    for item in list(p.channel(root).findall('item')):
+        p.channel(root).remove(item)
+    return root
 
 
 def asset(name='epc-' + 'a' * 64 + '.mp3', age=0):
@@ -216,6 +221,84 @@ class DeliveryTests(unittest.TestCase):
         with patch.object(client, 'request', side_effect=[[asset()] * 100, [asset()]]) as request:
             self.assertEqual(len(client.assets({'id': 1})), 101)
         self.assertIn('page=2', request.call_args_list[1].args[1])
+
+
+class MacAudioTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.directory = Path(self.temp.name)
+        self.source = self.directory / 'source.m4a'
+        self.original = b'original audio bytes'
+        self.source.write_bytes(self.original)
+        self.addCleanup(self.temp.cleanup)
+
+    def assert_passthrough(self, output, suffix='.m4a', mime='audio/mp4'):
+        source = self.source.with_suffix(suffix)
+        if source != self.source:
+            source.write_bytes(self.original)
+        result = subprocess.CompletedProcess([], 0, stdout=output, stderr='')
+        with patch.object(p.sys, 'platform', 'darwin'), \
+                patch.object(p.shutil, 'which', return_value=None), \
+                patch.object(p.subprocess, 'run', return_value=result) as run:
+            self.assertEqual(p.prepare_audio(source, self.directory), (source, suffix, mime))
+        run.assert_called_once_with(['/usr/bin/afinfo', str(source)],
+                                    capture_output=True, text=True)
+        self.assertEqual(source.read_bytes(), self.original)
+
+    def test_mac_aac_output_without_quotes_passes_through(self):
+        # The actual older Mac's afinfo output that previously triggered an
+        # unnecessary, failing conversion of an already compatible AAC file.
+        self.assert_passthrough('''File:           source.m4a
+File type ID:   m4af
+Num Tracks:     1
+----
+Data format:     1 ch,  22050 Hz, aac  (0x00000000) 0 bits/channel, 0 bytes/packet, 1024 frames/packet, 0 bytes/frame
+                no channel layout.
+estimated duration: 478.188844 sec
+audio bytes: 1913078
+bit rate: 31998 bits per second
+format list:
+[ 0] format: 1 ch, 22050 Hz, aac (0x00000000)
+Channel layout: Mono
+----
+''')
+
+    def test_quoted_aac_variants_pass_through(self):
+        for codec in ("'aac '", '"aac "', "'aach'", "'aacl'"):
+            with self.subTest(codec=codec):
+                self.assert_passthrough('Data format: 2 ch, 44100 Hz, %s (0x00000000)\n' % codec)
+
+    def test_mp3_with_or_without_quotes_passes_through(self):
+        for codec in ("'.mp3'", '.mp3', 'mp3'):
+            with self.subTest(codec=codec):
+                self.assert_passthrough('Data format: 2 ch, 44100 Hz, %s (0x00000000)\n' % codec,
+                                        '.mp3', 'audio/mpeg')
+
+    def test_failed_optional_probe_falls_back_to_mac(self):
+        results = [subprocess.CompletedProcess([], 1, stdout='', stderr='probe failed'),
+                   subprocess.CompletedProcess([], 0, stdout='Data format: 1 ch, 22050 Hz, aac (0x00000000)\n', stderr='')]
+        with patch.object(p.sys, 'platform', 'darwin'), \
+                patch.object(p.shutil, 'which', return_value='/optional/ffprobe'), \
+                patch.object(p.subprocess, 'run', side_effect=results) as run:
+            self.assertEqual(p.prepare_audio(self.source, self.directory)[0], self.source)
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args_list[1].args[0], ['/usr/bin/afinfo', str(self.source)])
+
+    def test_mac_lossless_m4a_still_converts(self):
+        def native_command(args, **kwargs):
+            if args[0] == '/usr/bin/afinfo':
+                return subprocess.CompletedProcess(args, 0, stdout="Data format: 1 ch, 44100 Hz, 'alac' (0x00000000)\n", stderr='')
+            Path(args[-1]).write_bytes(b'converted AAC')
+            return subprocess.CompletedProcess(args, 0, stdout='', stderr='')
+
+        with patch.object(p.sys, 'platform', 'darwin'), \
+                patch.object(p.shutil, 'which', return_value=None), \
+                patch.object(p.subprocess, 'run', side_effect=native_command) as run:
+            media, suffix, mime = p.prepare_audio(self.source, self.directory)
+        self.assertNotEqual(media, self.source)
+        self.assertEqual((suffix, mime), ('.m4a', 'audio/mp4'))
+        self.assertEqual(run.call_args_list[1].args[0][0], '/usr/bin/afconvert')
+        self.assertEqual(self.source.read_bytes(), self.original)
 
 
 @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'ffmpeg unavailable')

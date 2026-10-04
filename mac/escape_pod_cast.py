@@ -249,15 +249,19 @@ def prepare_audio(source, directory):
                                 capture_output=True, text=True)
         if result.returncode == 0:
             codec = result.stdout.strip()
-    elif sys.platform == 'darwin':
+    if not codec and sys.platform == 'darwin':
         result = subprocess.run(['/usr/bin/afinfo', str(source)],
                                 capture_output=True, text=True)
         if result.returncode == 0:
-            match = re.search(r"Data format:.*?'([^']+)'", result.stdout)
-            codec = match.group(1).strip() if match else ''
+            # afinfo prints codec names with or without quotes across macOS
+            # versions, for example 'aac ' or aac (0x00000000).
+            match = re.search(
+                r'''^\s*Data format:[^\r\n]*?\bHz,\s*['"]?([A-Za-z0-9.]+)\s*['"]?\s*\(''',
+                result.stdout, re.MULTILINE)
+            codec = match.group(1) if match else ''
     if suffix == '.mp3' and codec in ('mp3', '.mp3'):
         return source, '.mp3', 'audio/mpeg'
-    if suffix == '.m4a' and codec in ('aac', 'aac ', 'aach', 'aacl'):
+    if suffix == '.m4a' and codec in ('aac', 'aach', 'aacl'):
         return source, '.m4a', 'audio/mp4'
     target = directory / 'episode.m4a'
     converter = shutil.which('ffmpeg')
