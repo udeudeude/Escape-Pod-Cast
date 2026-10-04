@@ -272,18 +272,24 @@ def get_token(repo):
     return result.stdout.strip()
 
 
-def setup(repo):
+def setup(repo, token=None, progress=None):
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo):
         raise Failure('Repository must be owner/name.')
-    print('Use a GitHub fine-grained token restricted to ' + repo +
-          ', with Contents, Pages, and Administration permissions: Read and write.\n'
-          'Administration is needed only to enable/configure GitHub Pages.')
-    token = getpass.getpass('Paste token (hidden): ').strip()
+    if token is None:
+        print('Use a GitHub fine-grained token restricted to ' + repo +
+              ', with Contents, Pages, and Administration permissions: Read and write.\n'
+              'Administration is needed only to enable/configure GitHub Pages.')
+        token = getpass.getpass('Paste token (hidden): ').strip()
+    if not re.fullmatch(r'[A-Za-z0-9_]+', token):
+        raise Failure('Paste the GitHub token itself, without quotes or spaces.')
+    report = progress or (lambda message: print(message, flush=True))
+    report('Checking your GitHub connection…')
     client = GitHub(repo, token)
     metadata = client.request('GET', '')
     if metadata['private'] or metadata['default_branch'] != 'main':
         raise Failure('This version requires a public repository with main as default branch.')
     client.read_feed()
+    report('Preparing temporary audio storage…')
     release = client.request('GET', '/releases/tags/audio', missing=True)
     if release is None:
         client.request('POST', '/releases', {
@@ -291,6 +297,7 @@ def setup(repo):
             'name': 'Temporary podcast audio', 'body':
             'Escape Pod Cast audio. Files expire after 14 days.',
             'draft': False, 'prerelease': True})
+    report('Preparing your podcast feed…')
     pages = client.request('GET', '/pages', missing=True)
     source = {'branch': 'main', 'path': '/docs'}
     if pages is None:
@@ -300,8 +307,7 @@ def setup(repo):
         pages = client.request('GET', '/pages')
     # security's interactive command input keeps the credential out of argv.
     # Tokens use a restricted alphabet, so quoting this command is unambiguous.
-    if not re.fullmatch(r'[A-Za-z0-9_]+', token):
-        raise Failure('Unexpected token format.')
+    report('Saving your connection in Mac Keychain…')
     command = 'add-generic-password -U -s "%s" -a "%s" -w "%s"\n' % (
         SERVICE, repo, token)
     result = subprocess.run(['/usr/bin/security', '-i'], input=command,
@@ -317,6 +323,7 @@ def setup(repo):
     (HOME / 'Feed URL.txt').write_text(feed_url + '\n')
     print('\nFollow this once in Apple Podcasts:\n' + feed_url +
           '\nPages may take a few minutes to publish. Enable automatic downloads.')
+    return {'repo': repo, 'feed_url': feed_url}
 
 
 @contextlib.contextmanager

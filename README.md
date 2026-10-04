@@ -4,7 +4,7 @@
 
 Your Mac prepares the audio and updates a static feed. Your existing GitHub account hosts the feed on Pages and the temporary audio as Release assets. No application server, database, storage provider, additional account, or payment method.
 
-[Install on your Mac →](SETUP.md)
+[Download](https://github.com/udeudeude/Escape-Pod-Cast/archive/refs/heads/main.zip), unzip, and double-click **START-HERE.command**. The guided Mac setup opens GitHub with permission fields filled in and handles the connection, app installation, and feed setup. [More setup help →](SETUP.md)
 
 ## Everyday use
 
@@ -12,7 +12,7 @@ Your Mac prepares the audio and updates a static feed. Your existing GitHub acco
 2. The app uploads in the background and confirms publication, or tells you where to find an error.
 3. Apple Podcasts fetches the new episode on its next refresh, with automatic downloads enabled.
 
-Or open the app and drop files into **Drop Audio Here**. The folder monitor publishes files after they have settled for about a minute, moving successful originals into **Published**. Direct app drops leave originals untouched. Titles come from filenames. There is no mandatory title editor or Publish button.
+Opening the app also offers **Add audio…**, **Open drop folder**, **Copy podcast link**, and **Open publishing log**. Choose **Open drop folder** to use **Drop Audio Here**. The folder monitor publishes files after they have settled for about a minute, moving successful originals into **Published**. Direct app drops leave originals untouched. Titles come from filenames. There is no mandatory title editor or Publish button.
 
 ## Three participants
 
@@ -40,7 +40,7 @@ This is an **unlisted, publicly accessible personal feed**, not an authenticated
 
 ## Testing and scope
 
-Run `python3 -m unittest discover -s tests -v` for feed, retry, cleanup, delivery-validation, and conversion tests. Conversion tests need ffmpeg and ffprobe; the publisher itself does not require them on macOS. The native droplet and Keychain integration must be verified on a Mac, followed by an actual iPhone subscription/download test.
+Run `python3 -m unittest discover -s tests -v` for feed, retry, cleanup, delivery-validation, conversion, and setup-boundary tests. Conversion tests need ffmpeg and ffprobe; the publisher itself does not require them on macOS. The native droplet and Keychain integration must be verified on a Mac, followed by an actual iPhone subscription/download test.
 
 The obsolete Node server, browser uploader, Render blueprint, object-storage dependencies, and storage configuration were removed from the current branch. Historical commits remain intact. No old Releases or Actions runs existed during migration. Removing repository files does not close a separately deployed Render service or delete a Backblaze account/bucket.
 

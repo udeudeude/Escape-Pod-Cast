@@ -1,73 +1,57 @@
 # Install Escape Pod Cast on your Mac
 
-This setup uses your existing GitHub account. It costs nothing and asks for no payment method. You do not need Render, Backblaze, Apple Podcasts Connect, a custom domain, or a podcast-hosting account.
+1. [Download the current version](https://github.com/udeudeude/Escape-Pod-Cast/archive/refs/heads/main.zip) and unzip it.
+2. Double-click **START-HERE.command**.
+3. Follow the Mac setup windows. No Terminal typing is required.
 
-## 1. Download the tool
+If you downloaded an earlier version without START-HERE.command, download the current version first. The new installer also replaces the old Install.command behavior with the same guided setup.
 
-On your Mac, [download the repository ZIP](https://github.com/udeudeude/Escape-Pod-Cast/archive/refs/heads/main.zip) and unzip it. The installation copies the program into your Application Support folder, so the download folder can be removed afterward.
+## What the windows ask you to do
 
-The only required local runtime is **Python 3**. If the installer says it is missing, install the macOS package from [python.org](https://www.python.org/downloads/macos/), then try again. No Python packages are needed. If it raises a certificate verification error, run the Python installer's **Install Certificates.command** from its Applications folder. Python should be supported by your installed macOS version.
+Click **Install**. Your repository is already selected. Use **Other Repository** only for an independent copy.
 
-## 2. Create a repository-restricted GitHub credential
+The installer opens GitHub's token page with the name, owner, expiration, and required permissions filled in. On GitHub:
 
-Open [GitHub's new fine-grained token page](https://github.com/settings/personal-access-tokens/new).
+1. Sign in if asked.
+2. Under **Repository access**, choose **Only select repositories** and select **Escape-Pod-Cast**.
+3. Click **Generate token**, then copy the token.
+4. Return to the Escape Pod Cast window, paste it into the hidden field, and click **Connect**.
 
-1. Give it a name such as **Escape Pod Cast Mac**.
-2. Choose an expiration appropriate for you. Expiration means you must replace it later; an expired token cannot publish or clean up audio.
-3. Under **Repository access**, choose **Only select repositories**, then **Escape-Pod-Cast**.
-4. Add these repository permissions: **Contents: Read and write**, **Pages: Read and write**, **Administration: Read and write**. Metadata read access is automatic. Administration is required by GitHub's endpoint that enables/configures Pages; the program uses it for that setup operation only.
-5. Generate the token and copy it. Paste it only into the installer on your Mac, not into this chat.
+The installer checks the connection, stores the token in Mac Keychain, creates the temporary audio release, configures GitHub Pages, and installs the app. Connection failures appear in a setup window with a retry option. Reinstalling uses a still-working saved connection instead of asking you to create another credential.
 
-The token is stored in macOS Keychain, not in the repository, feed, configuration file, command-line arguments, or log. You can revoke it from the same GitHub settings page. For stricter permissions after setup, remove Administration from the token; normal publishing and cleanup need Contents access. You would have to restore Administration to run setup again if Pages needs reconfiguration.
+GitHub requires authorization before your Mac can upload to your account. No other account or payment method is involved. The token is not placed in process command arguments, the repository, feed, or log. It expires after one year with the prefilled default; you can choose a different expiration on GitHub. Administration permission is used only to configure Pages. Normal publishing and cleanup need Contents access.
 
-## 3. Run the installer
+## Your first episode
 
-Open **Install.command** in the extracted folder. If macOS blocks it, use the system's **Open Anyway** option for this downloaded file. If Finder opens it as text or says it is not executable, open Terminal, type `bash `, drag **Install.command** into the Terminal window, and press Return.
+After installation, click **Open App**, then **Add audio…** and choose a short audio file. You can also drop files onto the app icon, or keep it in your Dock.
 
-1. Press Return to accept `udeudeude/Escape-Pod-Cast` as your repository.
-2. Paste the GitHub token when asked. The terminal hides your input.
-3. Approve any macOS Keychain prompt for this program.
-
-The installer:
-
-1. Confirms that your repository is public and uses `main`.
-2. Creates a single **audio** release if needed.
-3. Enables GitHub Pages from **main → /docs**.
-4. Creates **Escape Pod Cast.app** in your personal Applications folder.
-5. Installs a per-user folder monitor and cleanup job that starts on login.
-6. Opens the app's location and your feed-address file, and copies the feed address to your clipboard.
-
-You can drag the app into your Dock. Double-clicking it opens the watched folder. Dragging files onto the icon publishes them in the background.
-
-Files and logs live in `~/Library/Application Support/Escape Pod Cast/`. Your app is `~/Applications/Escape Pod Cast.app`. The installation is per-user and does not need administrator privileges.
-
-## 4. Follow it once on the iPhone
-
-After a few minutes, open your feed address in a browser to confirm that Pages is serving XML rather than a missing-page error. For this repository, the address is:
-
-`https://udeudeude.github.io/Escape-Pod-Cast/feed.xml`
-
-On your iPhone:
+The app's menu provides **Open drop folder**, **Copy podcast link**, and **Open publishing log**. The feed link is copied at the end of installation. On your iPhone:
 
 1. Open **Apple Podcasts → Library → ••• → Follow a Show by URL**.
-2. Paste the feed address. If Apple rejects the empty feed, publish your first short audio file and try again after Pages updates.
-3. Enable automatic episode downloads for this show.
+2. Paste the podcast link and enable automatic downloads for this show.
+3. Confirm your first episode actually downloads and plays with the iPhone offline.
 
-The feed is not submitted to Apple's catalog. Its contents and audio are publicly accessible through GitHub.
+The installer checks whether the feed is online. If GitHub has not published it yet, it tells you to allow a few minutes. Apple may reject an empty feed; publish one episode first if that happens. Apple controls refresh timing.
 
-## 5. Test with one small audio file
+## If the installer does not open
 
-Drop a short MP3 or M4A onto the app. Wait for its completion message. Check that the episode appears and actually downloads in Apple Podcasts. Apple controls refresh timing; check the show manually if automatic refresh has not happened yet.
+If macOS blocks the downloaded command, check **System Settings → Privacy & Security** for **Open Anyway** and reopen it. On older macOS releases, the equivalent section is in System Preferences. If Finder opens the file as text or says it is not executable, open Terminal, type `bash `, drag START-HERE.command into the Terminal window, and press Return. This is a fallback for the downloaded file, not part of normal setup.
 
-Do not assume that seeing a title proves a download completed. Check that playback works with your iPhone offline. This first Mac/iPhone test also verifies the native app, your credential, Pages publication, release delivery, and Apple behavior together.
+The only required local runtime is **Python 3**. If missing, the installer explains how to download it and opens [python.org](https://www.python.org/downloads/macos/). Install the macOS package, then reopen START-HERE.command. No Python packages are needed. If Python reports a certificate error, run **Install Certificates.command** from its folder in Applications.
 
-Before relying on two-week expiry for important recordings, save/download an episode, then test its survival after remote expiry. Apple Podcasts' local retention settings are separate from this tool's cleanup.
+## What is installed
+
+The app is at `~/Applications/Escape Pod Cast.app`. Its program, watched folder, feed-address file, and log are in `~/Library/Application Support/Escape Pod Cast/`. A per-user job handles folder uploads and cleanup while your Mac is awake. The downloaded folder can be removed after successful installation.
+
+Originals dropped onto the app are untouched. Successful watched-folder uploads move into its **Published** subfolder. Audio is removed from GitHub after 14 days, with cleanup catching up when the Mac wakes. Preserve important originals until you have verified Apple Podcasts' local retention behavior after remote expiry.
+
+The feed and audio are **publicly accessible** through GitHub. This is an unlisted personal feed, not authenticated private storage. Nothing is submitted to Apple's catalog.
 
 ## If something fails
 
 Open **Status.log** in the Application Support folder. Retry the original failed file after fixing the problem; a completed upload is reused. The watched folder leaves failed originals in place and retries automatically. Files successfully published from that folder move into its **Published** subfolder. Keep that subfolder or move originals elsewhere as you prefer; it is not automatically deleted.
 
-1. **Token expired or GitHub rejected access:** run Install.command with a replacement credential.
+1. **Token expired or GitHub rejected access:** run START-HERE.command to reconnect.
 2. **Feed URL gives 404:** check [Pages settings](https://github.com/udeudeude/Escape-Pod-Cast/settings/pages) for main and /docs, then wait for publication.
 3. **Audio conversion failed:** use a supported input or optionally install ffmpeg. If you already use Homebrew, `brew install ffmpeg` adds the converter and codec probe. Never publish an incompatible format merely by renaming its extension.
 4. **HEAD or byte-range validation failed:** audio was not added to the feed. Retry; if it persists, investigate the host's delivery behavior before assuming Apple will accept it.
