@@ -62,7 +62,7 @@ def token_url(repo):
         'name': 'Escape Pod Cast Mac',
         'description': 'Publish my personal podcast and enable its GitHub Pages feed.',
         'target_name': repo.split('/')[0],
-        'expires_in': '366', 'contents': 'write', 'pages': 'write',
+        'expires_in': '365', 'contents': 'write', 'pages': 'write',
         'administration': 'write',
     })
 

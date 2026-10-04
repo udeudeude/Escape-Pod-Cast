@@ -37,6 +37,7 @@ class DialogTests(unittest.TestCase):
     def test_token_template_prefills_only_needed_permissions(self):
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(installer.token_url('owner/my-show')).query)
         self.assertEqual(query['target_name'], ['owner'])
+        self.assertEqual(query['expires_in'], ['365'])
         self.assertEqual(query['contents'], ['write'])
         self.assertEqual(query['pages'], ['write'])
         self.assertEqual(query['administration'], ['write'])
