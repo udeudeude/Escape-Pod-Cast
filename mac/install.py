@@ -8,7 +8,6 @@ import shutil
 import subprocess
 import sys
 import urllib.parse
-import urllib.request
 
 import escape_pod_cast as publisher
 
@@ -69,22 +68,30 @@ def token_url(repo):
 
 def connect(repo):
     owner, name = repo.split('/', 1)
-    dialog('One connection to GitHub is needed so this Mac can publish your audio.\n\n'
+    action, _ = dialog('One connection to GitHub is needed so this Mac can publish your audio.\n\n'
            'The next screen opens GitHub with the name and permissions filled in.\n\n'
            'On GitHub:\n'
            '1. Sign in as %s if asked.\n'
            '2. Choose “Only select repositories” and select %s.\n'
            '3. Click “Generate token”, then copy the token.\n\n'
-           'Return to the Escape Pod Cast window and paste it. You only do this during setup.' % (owner, name),
-           buttons=('Cancel', 'Open GitHub'))
-    while True:
+           'If you already created a token, choose “Paste Token” to use it.' % (owner, name),
+           buttons=('Cancel', 'Open GitHub', 'Paste Token'))
+    if action == 'Open GitHub':
         subprocess.run(['/usr/bin/open', token_url(repo)], check=True)
-        button, token = dialog('Finish on GitHub, then paste the copied token here.\n\n'
-                               'Select “Only select repositories” → %s, then “Generate token”.\n'
-                               'The pasted text stays hidden.' % name,
-                               buttons=('Cancel', 'Connect'), text='', hidden=True)
+    token = None
+    while True:
+        if token is None:
+            action, pasted = dialog('Paste your existing GitHub token here.\n\n'
+                                    'If you need to create one, choose “Open GitHub”, select '
+                                    '“Only select repositories” → %s, then generate and copy it.\n\n'
+                                    'The pasted text stays hidden.' % name,
+                                    buttons=('Cancel', 'Open GitHub', 'Connect'), text='', hidden=True)
+            if action == 'Open GitHub':
+                subprocess.run(['/usr/bin/open', token_url(repo)], check=True)
+                continue
+            token = pasted.strip()
         try:
-            return publisher.setup(repo, token.strip(), progress=notify)
+            return publisher.setup(repo, token, progress=notify)
         except (publisher.Failure, OSError, ValueError) as exc:
             hint = str(exc)
             if '401' in hint:
@@ -95,8 +102,11 @@ def connect(repo):
             elif 'CERTIFICATE_VERIFY_FAILED' in hint:
                 hint = ('Python needs its certificates installed. Open the Python folder in Applications '
                         'and run Install Certificates.command, then try again.')
-            dialog('The connection is not ready yet.\n\n' + hint,
-                   buttons=('Cancel', 'Try Again'))
+            action, _ = dialog('The connection is not ready yet.\n\n' + hint +
+                               '\n\n“Try Again” reuses the same token.',
+                               buttons=('Cancel', 'Replace Token', 'Try Again'))
+            if action == 'Replace Token':
+                token = None
 
 
 def droplet_source(python, script, folder, log, feed_url):
@@ -208,10 +218,9 @@ def main():
     # The feed link may take time to become live. Do not label an untested URL ready.
     ready = False
     try:
-        with urllib.request.urlopen(config['feed_url'], timeout=8) as response:
-            root = publisher.ET.fromstring(response.read())
-            ready = root.find('channel') is not None
-    except (OSError, ValueError, publisher.ET.ParseError):
+        root = publisher.ET.fromstring(publisher.public_bytes(config['feed_url']))
+        ready = root.find('channel') is not None
+    except (publisher.Failure, OSError, ValueError, publisher.ET.ParseError):
         pass
     status = ('Your feed is online.' if ready else
               'GitHub is preparing your feed; allow a few minutes before following it.')

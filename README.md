@@ -22,7 +22,7 @@ Opening the app also offers **Add audio…**, **Open drop folder**, **Copy podca
 | GitHub | Pages serves `feed.xml`; one `audio` release holds temporary audio |
 | iPhone / Apple Podcasts | Follows the feed URL directly and downloads episodes |
 
-The local program needs Python 3 and uses its standard library. No package installation, Git commands, GitHub command-line tool, or web application is needed for everyday use. macOS provides the app compiler, Keychain credential storage, audio converter, and scheduled folder monitor. Optional ffmpeg expands supported audio formats.
+The local program needs Python 3 and uses its standard library. No package installation, Git commands, GitHub command-line tool, or web application is needed for everyday use. macOS provides the app compiler, Keychain credential storage, audio converter, and scheduled folder monitor. Network requests on macOS use the included curl tool, keeping setup and publishing on the same network path. Optional ffmpeg expands supported audio formats.
 
 ## Audio and retention
 
@@ -40,7 +40,7 @@ This is an **unlisted, publicly accessible personal feed**, not an authenticated
 
 ## Testing and scope
 
-Run `python3 -m unittest discover -s tests -v` for feed, retry, cleanup, delivery-validation, conversion, and setup-boundary tests. Conversion tests need ffmpeg and ffprobe; the publisher itself does not require them on macOS. The native droplet and Keychain integration must be verified on a Mac, followed by an actual iPhone subscription/download test.
+Run `python3 -m unittest discover -s tests -v` for feed, retry, cleanup, delivery-validation, conversion, setup-boundary, and Mac network transport tests. Conversion tests need ffmpeg and ffprobe; the publisher itself does not require them on macOS. The native droplet and Keychain integration must be verified on a Mac, followed by an actual iPhone subscription/download test.
 
 The obsolete Node server, browser uploader, Render blueprint, object-storage dependencies, and storage configuration were removed from the current branch. Historical commits remain intact. No old Releases or Actions runs existed during migration. Removing repository files does not close a separately deployed Render service or delete a Backblaze account/bucket.
 

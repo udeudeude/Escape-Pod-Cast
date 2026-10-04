@@ -35,6 +35,78 @@ class Failure(RuntimeError):
     pass
 
 
+class NetworkFailure(Failure):
+    pass
+
+
+def curl_value(value):
+    return '"' + str(value).replace('\\', '\\\\').replace('"', '\\"').replace(
+        '\r', '\\r').replace('\n', '\\n') + '"'
+
+
+def mac_transfer(url, method='GET', headers=None, data=None, upload=None,
+                 follow=False, max_time=120, max_size=None):
+    """Use macOS's working curl path; keep authorization in stdin, never argv."""
+    with tempfile.TemporaryDirectory() as folder:
+        folder = Path(folder)
+        output, header_file = folder / 'response', folder / 'headers'
+        args = ['/usr/bin/curl', '-q', '--silent', '--show-error',
+                '--connect-timeout', '15', '--max-time', str(max_time),
+                '--proto', '=https', '--request', method,
+                '--output', str(output), '--dump-header', str(header_file),
+                '--write-out', '%{http_code}', '--config', '-']
+        config = 'url = ' + curl_value(url) + '\n'
+        for name, value in (headers or {}).items():
+            config += 'header = ' + curl_value(name + ': ' + value) + '\n'
+        if follow:
+            args.extend(['--location', '--max-redirs', '5', '--proto-redir', '=https'])
+        if method == 'HEAD':
+            args.append('--head')
+        if data is not None:
+            payload = folder / 'request'
+            payload.write_bytes(data)
+            args.extend(['--data-binary', '@' + str(payload)])
+        if upload is not None:
+            args.extend(['--upload-file', str(upload)])
+        if max_size is not None:
+            args.extend(['--max-filesize', str(max_size)])
+        result = subprocess.run(args, input=config, capture_output=True, text=True)
+        if result.returncode:
+            messages = {
+                5: 'The configured network proxy could not be found.',
+                6: 'The server address could not be found.',
+                7: 'The server could not be reached.',
+                28: 'The connection timed out.',
+                60: 'macOS could not verify the server certificate.',
+                63: 'The server did not respect the requested audio byte range.',
+            }
+            raise NetworkFailure(messages.get(result.returncode, 'The network request failed.') +
+                                 ' Check your connection and try again with the same GitHub token.')
+        try:
+            status = int(result.stdout.strip())
+        except ValueError:
+            raise NetworkFailure('The network tool returned an unreadable response.') from None
+        response_headers = {}
+        if header_file.exists():
+            for line in header_file.read_text(errors='replace').splitlines():
+                if line.startswith('HTTP/'):
+                    response_headers = {}  # Only the final response after redirects.
+                elif ':' in line:
+                    key, value = line.split(':', 1)
+                    response_headers[key.lower()] = value.strip()
+        return status, output.read_bytes() if output.exists() else b'', response_headers
+
+
+def public_bytes(url):
+    if sys.platform == 'darwin':
+        status, data, _ = mac_transfer(url, follow=True, max_time=10)
+        if status != 200:
+            raise Failure('The public feed is not available yet (%s).' % status)
+        return data
+    with urllib.request.urlopen(url, timeout=8) as response:
+        return response.read()
+
+
 class GitHub:
     def __init__(self, repo, token):
         self.repo, self.token = repo, token
@@ -51,6 +123,15 @@ class GitHub:
         headers = self.headers()
         if data is not None:
             headers['Content-Type'] = 'application/json'
+        if sys.platform == 'darwin':
+            status, raw, _ = mac_transfer(self.base + path, method, headers, data=data)
+            if missing and status == 404:
+                return None
+            if status >= 400:
+                raise Failure('GitHub returned %s for %s %s. Check token permissions, '
+                              'expiration, connection, and repository access.' %
+                              (status, method, path))
+            return json.loads(raw) if raw else None
         req = urllib.request.Request(self.base + path, data=data,
                                      headers=headers, method=method)
         try:
@@ -79,6 +160,16 @@ class GitHub:
         url = urllib.parse.urlsplit(release['upload_url'].split('{')[0])
         if url.scheme != 'https' or url.hostname != 'uploads.github.com':
             raise Failure('Unexpected GitHub upload endpoint.')
+        if sys.platform == 'darwin':
+            headers = self.headers()
+            headers['Content-Type'] = mime
+            status, raw, _ = mac_transfer(release['upload_url'].split('{')[0] +
+                                         '?name=' + name, 'POST', headers,
+                                         upload=path, max_time=900)
+            if status != 201:
+                raise Failure('Audio upload failed (%s). Retry the original file; '
+                              'completed uploads are reused.' % status)
+            return json.loads(raw)
         connection = http.client.HTTPSConnection(url.hostname, timeout=900)
         headers = self.headers()
         headers.update({'Content-Type': mime, 'Content-Length': str(path.stat().st_size)})
@@ -197,6 +288,16 @@ def fingerprint(path):
 def verify_enclosure(url, size):
     # Use the public download URL, with no GitHub credential. Follow redirects
     # exactly as the podcast client will, and demand actual partial delivery.
+    if sys.platform == 'darwin':
+        status, _, headers = mac_transfer(url, 'HEAD', follow=True)
+        if status != 200 or int(headers.get('content-length', '-1')) != size:
+            raise Failure('Public audio HEAD response has the wrong file length.')
+        status, payload, headers = mac_transfer(url, headers={'Range': 'bytes=0-0'},
+                                               follow=True, max_size=1)
+        if (status != 206 or headers.get('content-range') != 'bytes 0-0/%s' % size or
+                len(payload) != 1):
+            raise Failure('Public audio endpoint did not return a valid byte range.')
+        return
     with urllib.request.urlopen(urllib.request.Request(url, method='HEAD'),
                                 timeout=90) as response:
         if int(response.headers.get('Content-Length', '-1')) != size:

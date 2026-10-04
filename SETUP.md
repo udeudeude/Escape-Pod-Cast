@@ -10,14 +10,14 @@ If you downloaded an earlier version without START-HERE.command, download the cu
 
 Click **Install**. Your repository is already selected. Use **Other Repository** only for an independent copy.
 
-The installer opens GitHub's token page with the name, owner, expiration, and required permissions filled in. On GitHub:
+If you already created a token, choose **Paste Token** and reuse it. Otherwise choose **Open GitHub**; the token page has the name, owner, expiration, and required permissions filled in. On GitHub:
 
 1. Sign in if asked.
 2. Under **Repository access**, choose **Only select repositories** and select **Escape-Pod-Cast**.
 3. Click **Generate token**, then copy the token.
 4. Return to the Escape Pod Cast window, paste it into the hidden field, and click **Connect**.
 
-The installer checks the connection, stores the token in Mac Keychain, creates the temporary audio release, configures GitHub Pages, and installs the app. Connection failures appear in a setup window with a retry option. Reinstalling uses a still-working saved connection instead of asking you to create another credential.
+The installer checks the connection, stores the token in Mac Keychain, creates the temporary audio release, configures GitHub Pages, and installs the app. Connection failures appear in a setup window with a retry option. **Try Again** keeps the same credential; choose **Replace Token** only when you need a different one. Reinstalling uses a still-working saved connection instead of asking you to create another credential.
 
 GitHub requires authorization before your Mac can upload to your account. No other account or payment method is involved. The token is not placed in process command arguments, the repository, feed, or log. It expires after one year with the prefilled default; you can choose a different expiration on GitHub. Administration permission is used only to configure Pages. Normal publishing and cleanup need Contents access.
 
@@ -37,7 +37,7 @@ The installer checks whether the feed is online. If GitHub has not published it 
 
 If macOS blocks the downloaded command, check **System Settings → Privacy & Security** for **Open Anyway** and reopen it. On older macOS releases, the equivalent section is in System Preferences. If Finder opens the file as text or says it is not executable, open Terminal, type `bash `, drag START-HERE.command into the Terminal window, and press Return. This is a fallback for the downloaded file, not part of normal setup.
 
-The only required local runtime is **Python 3**. If missing, the installer explains how to download it and opens [python.org](https://www.python.org/downloads/macos/). Install the macOS package, then reopen START-HERE.command. No Python packages are needed. If Python reports a certificate error, run **Install Certificates.command** from its folder in Applications.
+The only required local runtime is **Python 3**. If missing, the installer explains how to download it and opens [python.org](https://www.python.org/downloads/macos/). Install the macOS package, then reopen START-HERE.command. No Python packages are needed. GitHub requests use macOS curl, so setup does not depend on Python’s network proxy lookup or certificate installation.
 
 ## What is installed
 
