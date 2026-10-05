@@ -11,12 +11,15 @@ import hashlib
 import http.client
 import json
 import os
+import platform
 from pathlib import Path
+import plistlib
 import re
 import secrets
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import urllib.error
 import urllib.parse
@@ -168,16 +171,17 @@ class GitHub:
                 return result
             page += 1
 
-    def upload(self, release, path, name, mime):
+    def upload(self, release, path, name, mime, label=None):
         # Stream from disk; do not hold a potentially 2 GiB episode in memory.
         url = urllib.parse.urlsplit(release['upload_url'].split('{')[0])
         if url.scheme != 'https' or url.hostname != 'uploads.github.com':
             raise Failure('Unexpected GitHub upload endpoint.')
+        query = urllib.parse.urlencode({'name': name, **({'label': label} if label else {})})
         if sys.platform == 'darwin':
             headers = self.headers()
             headers['Content-Type'] = mime
             status, raw, _ = mac_transfer(release['upload_url'].split('{')[0] +
-                                         '?name=' + name, 'POST', headers,
+                                         '?' + query, 'POST', headers,
                                          upload=path, max_time=900)
             if status != 201:
                 raise Failure('Audio upload failed (%s). Retry the original file; '
@@ -188,7 +192,7 @@ class GitHub:
         headers.update({'Content-Type': mime, 'Content-Length': str(path.stat().st_size)})
         try:
             with path.open('rb') as stream:
-                connection.request('POST', url.path + '?name=' + name,
+                connection.request('POST', url.path + '?' + query,
                                    body=stream, headers=headers)
                 response = connection.getresponse()
                 raw = response.read()
@@ -408,7 +412,7 @@ def verify_enclosure(url, size):
             raise Failure('Public audio endpoint did not return a valid byte range.')
 
 
-def publish(client, release, source, now):
+def publish(client, release, source, now, title=None, identity=None):
     with tempfile.TemporaryDirectory() as directory:
         # Snapshot before conversion/upload so originals cannot change beneath
         # a streaming upload. Fail if a copy into the watched folder is active.
@@ -419,7 +423,7 @@ def publish(client, release, source, now):
         if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
             raise Failure('File is still changing. Retry after copying finishes.')
         media, suffix, mime = prepare_audio(snapshot, Path(directory))
-        name = 'epc-' + fingerprint(snapshot) + suffix
+        name = 'epc-' + (identity or fingerprint(snapshot)) + suffix
         assets = client.assets(release)
         asset = next((a for a in assets if a['name'] == name), None)
         if asset and stamp(asset['created_at']) <= now - RETENTION:
@@ -436,14 +440,287 @@ def publish(client, release, source, now):
         if asset is None:
             if media.stat().st_size >= 2 * 1024 ** 3:
                 raise Failure('The prepared episode must be smaller than 2 GiB.')
-            asset = client.upload(release, media, name, mime)
+            if identity and title:
+                asset = client.upload(release, media, name, mime, label=title[:255])
+            else:
+                asset = client.upload(release, media, name, mime)
         verify_enclosure(asset['browser_download_url'], asset['size'])
         # Read after upload. SHA-conditional write fails safely if another publisher
         # changes the feed. Retrying reuses the already completed audio upload.
         root, sha = client.read_feed()
-        if add_episode(root, asset, source.stem, now):
+        if add_episode(root, asset, title or source.stem, now):
             client.write_feed(root, sha)
-        print('Published: ' + source.name, flush=True)
+        print('Published: ' + (title or source.name), flush=True)
+
+
+LINK_TYPES = ('.webloc', '.url', '.txt')
+VIDEO_ID = re.compile(r'^[A-Za-z0-9_-]{11}$')
+TOOLS_API = 'https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest'
+NODE_SUMS = 'https://nodejs.org/download/release/latest-v22.x/SHASUMS256.txt'
+
+
+def youtube_url(value):
+    """Only a single public YouTube video, never arbitrary extractor URLs."""
+    try:
+        url = urllib.parse.urlsplit(value.strip())
+        if (url.scheme not in ('http', 'https') or url.username or url.password or
+                url.port is not None):
+            raise ValueError()
+        host = (url.hostname or '').lower()
+        if host in ('youtu.be', 'www.youtu.be'):
+            video = url.path.strip('/')
+        elif host in ('youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com'):
+            if url.path == '/watch':
+                videos = urllib.parse.parse_qs(url.query).get('v', [])
+                video = videos[0] if len(videos) == 1 else ''
+            else:
+                match = re.fullmatch(r'/(?:shorts|live|embed)/([A-Za-z0-9_-]{11})/?', url.path)
+                video = match.group(1) if match else ''
+        else:
+            raise ValueError()
+        if not VIDEO_ID.fullmatch(video):
+            raise ValueError()
+        return 'https://www.youtube.com/watch?v=' + video, video
+    except ValueError:
+        raise Failure('Paste a link to one YouTube video, not a playlist or channel.') from None
+
+
+def link_file(path):
+    if path.stat().st_size > 64 * 1024:
+        raise Failure('The link file is too large. Paste one YouTube link in the app instead.')
+    try:
+        if path.suffix.lower() == '.webloc':
+            with path.open('rb') as stream:
+                value = plistlib.load(stream).get('URL', '')
+        else:
+            value = path.read_text(encoding='utf-8-sig').strip()
+            if path.suffix.lower() == '.url':
+                values = re.findall(r'^URL=(.+)$', value, re.MULTILINE | re.IGNORECASE)
+                value = values[0].strip() if len(values) == 1 else ''
+        if not isinstance(value, str):
+            raise ValueError()
+        return youtube_url(value)[0]
+    except (ValueError, TypeError, AttributeError, UnicodeError, plistlib.InvalidFileException):
+        raise Failure('Could not read the link. Paste one YouTube link in the app instead.') from None
+
+
+def tool_environment():
+    env = os.environ.copy()
+    # Do not inherit extra code injection paths/options into downloaded helpers.
+    for name in ('NODE_OPTIONS', 'NODE_PATH', 'PYTHONPATH', 'PYTHONHOME'):
+        env.pop(name, None)
+    return env
+
+
+def download_tool(url, destination, digest=None, limit=150 * 1024 ** 2):
+    """Public HTTPS only; stream to disk, retry transient network failures."""
+    if not url.startswith(('https://github.com/yt-dlp/yt-dlp/releases/download/',
+                           'https://nodejs.org/download/release/',
+                           'https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest')):
+        raise Failure('Unexpected helper download address.')
+    result = subprocess.run(['/usr/bin/curl', '-q', '--fail', '--silent', '--show-error',
+                             '--location', '--max-redirs', '5', '--proto', '=https',
+                             '--proto-redir', '=https', '--connect-timeout', '15',
+                             '--max-time', '900', '--retry', '2', '--max-filesize', str(limit),
+                             '--output', str(destination), url], capture_output=True, text=True)
+    if result.returncode:
+        raise NetworkFailure('Could not download the YouTube helpers. Check your connection '
+                             'and choose “Set up / update YouTube…” to retry.')
+    if not destination.is_file() or not 0 < destination.stat().st_size <= limit:
+        raise Failure('The helper download was empty or too large.')
+    if digest and fingerprint(destination) != digest:
+        raise Failure('A helper download failed its safety check. Nothing was installed; retry.')
+
+
+def node_download(sums, machine):
+    arch = {'x86_64': 'x64', 'arm64': 'arm64'}.get(machine)
+    if arch is None:
+        raise Failure('YouTube import needs an Intel or Apple Silicon Mac running macOS 11 or later.')
+    pattern = r'^([0-9a-f]{64})\s+(node-v22\.\d+\.\d+-darwin-' + arch + r'\.tar\.gz)$'
+    matches = re.findall(pattern, sums, re.MULTILINE)
+    if len(matches) != 1:
+        raise Failure('Could not find a verified Node 22 download for this Mac.')
+    digest, filename = matches[0]
+    version = filename.split('-')[1]
+    return 'https://nodejs.org/download/release/' + version + '/' + filename, digest, filename
+
+
+def unpack_node(archive, filename, destination):
+    # Never extract the archive's directory tree, symlinks, or arbitrary paths.
+    root = filename[:-len('.tar.gz')]
+    try:
+        with tarfile.open(archive, 'r:gz') as bundle:
+            for member_name, target in ((root + '/bin/node', destination / 'node'),
+                                        (root + '/LICENSE', destination / 'Node LICENSE.txt')):
+                member = bundle.getmember(member_name)
+                if not member.isfile() or not 0 < member.size <= 150 * 1024 ** 2:
+                    raise Failure('The Node archive has an unexpected file.')
+                with bundle.extractfile(member) as source, target.open('wb') as output:
+                    shutil.copyfileobj(source, output)
+        (destination / 'node').chmod(0o700)
+    except (KeyError, tarfile.TarError):
+        raise Failure('The Node archive could not be read. Retry the helper setup.') from None
+
+
+def active_youtube_tools():
+    home = HOME / 'YouTube Tools'
+    try:
+        name = json.loads((home / 'active.json').read_text())['bundle']
+        if not re.fullmatch(r'bundle-[0-9a-f]{16}', name):
+            return None
+        bundle = home / name
+        if all((bundle / name).is_file() and os.access(bundle / name, os.X_OK)
+               for name in ('yt-dlp', 'node')):
+            return bundle / 'yt-dlp', bundle / 'node'
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return None
+
+
+def mac_dialog(message, buttons=('Cancel', 'Enable')):
+    def literal(value):
+        return '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"'
+    script = ('display dialog %s with title "Escape Pod Cast" buttons {%s} '
+              'default button %s cancel button "Cancel"\nreturn button returned of result') % (
+                  literal(message), ', '.join(literal(b) for b in buttons), literal(buttons[-1]))
+    result = subprocess.run(['/usr/bin/osascript', '-'], input=script,
+                            capture_output=True, text=True)
+    if result.returncode:
+        raise Failure('YouTube setup cancelled. Your existing audio publishing is unchanged.')
+    return result.stdout.strip()
+
+
+def install_youtube_tools():
+    if sys.platform != 'darwin' or int(platform.mac_ver()[0].split('.')[0] or '0') < 11:
+        raise Failure('YouTube import supports macOS 11 or later, including 11.7.11 and 15.7.')
+    mac_dialog('Enable or update YouTube import?\n\n'
+               'This downloads two free helpers (yt-dlp and Node 22) from their official sources. '
+               'The downloads total about 90 MB; allow 400 MB of free disk space '
+               'and a few minutes on a slow connection. '
+               'No account, payment, administrator password, or Terminal commands are needed.\n\n'
+               'Only import material you have permission to copy and publicly host. '
+               'The podcast audio is public on GitHub.', buttons=('Cancel', 'Enable'))
+    home = HOME / 'YouTube Tools'
+    home.mkdir(parents=True, exist_ok=True)
+    print('Downloading and checking YouTube helpers…', flush=True)
+    with tempfile.TemporaryDirectory(prefix='staging-', dir=home) as temp:
+        staging = Path(temp)
+        metadata, sums, archive = staging / 'release.json', staging / 'sums.txt', staging / 'node.tar.gz'
+        download_tool(TOOLS_API, metadata, limit=2 * 1024 ** 2)
+        try:
+            release = json.loads(metadata.read_text())
+            asset = next(a for a in release['assets'] if a['name'] == 'yt-dlp_macos')
+            digest = asset['digest']
+            tag = release['tag_name']
+            if (not re.fullmatch(r'sha256:[0-9a-f]{64}', digest) or
+                    not isinstance(tag, str) or not isinstance(asset['browser_download_url'], str)):
+                raise ValueError()
+        except (KeyError, ValueError, TypeError, StopIteration):
+            raise Failure('Could not verify the official yt-dlp release. Retry later.') from None
+        download_tool(asset['browser_download_url'], staging / 'yt-dlp', digest[7:])
+        (staging / 'yt-dlp').chmod(0o700)
+        download_tool(NODE_SUMS, sums, limit=128 * 1024)
+        url, digest, filename = node_download(sums.read_text(), platform.machine())
+        download_tool(url, archive, digest)
+        unpack_node(archive, filename, staging)
+        for executable in ('node', 'yt-dlp'):
+            try:
+                result = subprocess.run([str(staging / executable), '--version'],
+                                        capture_output=True, text=True, timeout=60,
+                                        env=tool_environment())
+            except (OSError, subprocess.TimeoutExpired):
+                raise Failure('The new YouTube helpers could not run on this Mac. '
+                              'Your previous helpers are unchanged.') from None
+            if result.returncode or (executable == 'node' and not result.stdout.startswith('v22.')):
+                raise Failure('The new YouTube helpers are not compatible with this Mac. '
+                              'Your previous helpers are unchanged.')
+        # Only switch after both tools are verified and have run successfully.
+        # Move the checked files, avoiding a second large copy on older Macs.
+        name = 'bundle-' + secrets.token_hex(8)
+        installed = home / name
+        installed.mkdir()
+        for file in ('yt-dlp', 'node', 'Node LICENSE.txt'):
+            shutil.move(str(staging / file), str(installed / file))
+        pointer = staging / 'active.json'
+        pointer.write_text(json.dumps({'bundle': name, 'yt_dlp': tag,
+                                       'node': filename}))
+        os.replace(pointer, home / 'active.json')
+    print('YouTube helpers are ready.', flush=True)
+    return active_youtube_tools()
+
+
+def download_youtube(url, video, directory, tools):
+    downloader, node = tools
+    output = directory / 'download.log'
+    args = [str(downloader), '--ignore-config', '--no-plugin-dirs', '--no-js-runtimes',
+            '--js-runtimes', 'node:' + str(node), '--no-remote-components',
+            '--no-playlist', '--no-progress', '--no-colors', '--socket-timeout', '20',
+            '--retries', '3', '--fragment-retries', '3', '--abort-on-unavailable-fragments',
+            '--max-filesize', str(2 * 1024 ** 3 - 1), '--match-filters', '!is_live',
+            '--format', 'bestaudio[ext=m4a]', '--fixup', 'never', '--write-info-json',
+            '--output', str(directory / 'audio.%(ext)s'), '--', url]
+    print('Getting YouTube audio: ' + url, flush=True)
+    try:
+        with output.open('w') as log:
+            result = subprocess.run(args, stdout=log, stderr=subprocess.STDOUT,
+                                    timeout=7200, env=tool_environment())
+    except subprocess.TimeoutExpired:
+        raise Failure('The YouTube download timed out. Check your connection and retry.') from None
+    if result.returncode:
+        with output.open('rb') as log:
+            log.seek(max(0, output.stat().st_size - 4000))
+            detail = log.read().decode('utf-8', errors='replace')
+        print(detail, file=sys.stderr, flush=True)
+        raise Failure('YouTube audio could not be downloaded. The video may be unavailable, '
+                      'restricted, blocked by YouTube, or have no compatible audio. '
+                      'For an ordinary public video, try “Set up / update YouTube…” and retry. '
+                      'No sign-in, browser cookies, or access restrictions are bypassed.')
+    media, info = directory / 'audio.m4a', directory / 'audio.info.json'
+    try:
+        if info.stat().st_size > 16 * 1024 ** 2:
+            raise ValueError()
+        metadata = json.loads(info.read_text())
+        if (metadata.get('id') != video or metadata.get('is_live') or
+                metadata.get('live_status') in ('is_live', 'is_upcoming') or
+                not media.is_file() or not 0 < media.stat().st_size < 2 * 1024 ** 3):
+            raise ValueError()
+        title = metadata.get('title')
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError()
+        # Remove characters XML 1.0 cannot represent; filenames never use this title.
+        title = ''.join(c for c in title if c in '\t\n\r' or
+                        0x20 <= ord(c) <= 0xd7ff or 0xe000 <= ord(c) <= 0xfffd or
+                        0x10000 <= ord(c) <= 0x10ffff).strip()[:1000]
+        if not title:
+            raise ValueError()
+    except (OSError, ValueError, TypeError, AttributeError):
+        raise Failure('YouTube did not return complete audio for that video. '
+                      'Live or upcoming streams are not supported; retry a finished video.') from None
+    return media, title
+
+
+def publish_youtube(client, release, value, now, prompt=True):
+    url, video = youtube_url(value)
+    identity = hashlib.sha256(('youtube:' + video).encode('ascii')).hexdigest()
+    existing = next((a for a in client.assets(release)
+                     if a['name'] == 'epc-' + identity + '.m4a' and
+                     a.get('state') == 'uploaded' and stamp(a['created_at']) > now - RETENTION), None)
+    if existing:
+        # A failed feed update can be retried without redownloading/reuploading audio.
+        verify_enclosure(existing['browser_download_url'], existing['size'])
+        root, sha = client.read_feed()
+        if add_episode(root, existing, existing.get('label') or 'YouTube ' + video, now):
+            client.write_feed(root, sha)
+        print('Published existing YouTube audio: ' + video, flush=True)
+        return
+    tools = active_youtube_tools()
+    if tools is None:
+        if not prompt:
+            raise Failure('Open the app and choose “Set up / update YouTube…” first.')
+        tools = install_youtube_tools()
+    with tempfile.TemporaryDirectory() as temp:
+        media, title = download_youtube(url, video, Path(temp), tools)
+        publish(client, release, media, now, title=title, identity=identity)
 
 
 def cleanup(client, release, now):
@@ -541,11 +818,14 @@ def locked():
         yield
 
 
-def process_files(client, release, paths, now):
+def process_files(client, release, paths, now, prompt=True):
     failed = []
     for path in paths:
         try:
-            publish(client, release, path, now)
+            if path.suffix.lower() in LINK_TYPES:
+                publish_youtube(client, release, link_file(path), now, prompt=prompt)
+            else:
+                publish(client, release, path, now)
         except (Failure, OSError, ValueError, ET.ParseError) as exc:
             print('Failed: %s: %s' % (path.name, exc), file=sys.stderr, flush=True)
             failed.append(path)
@@ -557,12 +837,17 @@ def main():
     parser.add_argument('--setup', metavar='OWNER/REPO')
     parser.add_argument('--maintain', action='store_true')
     parser.add_argument('--notify', action='store_true')
+    parser.add_argument('--youtube', metavar='VIDEO_URL')
+    parser.add_argument('--youtube-setup', action='store_true')
     parser.add_argument('files', nargs='*', type=Path)
     args = parser.parse_args()
     if args.setup:
         setup(args.setup)
         return
     with locked():
+        if args.youtube_setup:
+            install_youtube_tools()
+            return
         if not CONFIG.exists():
             raise Failure('Run Install.command first.')
         config = json.loads(CONFIG.read_text())
@@ -573,21 +858,27 @@ def main():
             for path in inbox.iterdir():
                 if (path.is_file() and not path.name.startswith('.') and
                     path.suffix.lower() in ('.mp3', '.m4a', '.aac', '.wav', '.flac',
-                                            '.ogg', '.opus', '.aif', '.aiff', '.mp4') and
+                                            '.ogg', '.opus', '.aif', '.aiff', '.mp4') + LINK_TYPES and
                     dt.datetime.now().timestamp() - path.stat().st_mtime >= 60):
                     candidates.append(path)
             last = HOME / 'last-cleanup'
-            if not candidates and last.exists() and not args.files:
+            if not candidates and last.exists() and not args.files and not args.youtube:
                 if dt.datetime.now().timestamp() - last.stat().st_mtime < 3600:
                     return
         client = GitHub(config['repo'], get_token(config['repo']))
         release = client.request('GET', '/releases/tags/audio')
         now = dt.datetime.now(dt.timezone.utc)
         failed = process_files(client, release, args.files, now)
+        if args.youtube:
+            try:
+                publish_youtube(client, release, args.youtube, now)
+            except (Failure, OSError, ValueError, ET.ParseError) as exc:
+                print('Failed: YouTube link: ' + str(exc), file=sys.stderr, flush=True)
+                failed.append(args.youtube)
         if args.maintain:
             done = inbox / 'Published'
             done.mkdir(parents=True, exist_ok=True)
-            errors = process_files(client, release, candidates, now)
+            errors = process_files(client, release, candidates, now, prompt=False)
             failed.extend(errors)
             for path in candidates:
                 if path not in errors:
@@ -598,7 +889,7 @@ def main():
         cleanup(client, release, now)
         (HOME / 'last-cleanup').touch()
         if failed:
-            raise Failure('%s file(s) failed. Successful files are already published. '
+            raise Failure('%s item(s) failed. Successful items are already published. '
                           'Retry failures; see Status.log for details.' % len(failed))
 
 
@@ -606,16 +897,20 @@ if __name__ == '__main__':
     try:
         main()
         if '--notify' in sys.argv:
+            message = ('YouTube helpers are ready. Open the app and choose “Paste YouTube link…”.'
+                       if '--youtube-setup' in sys.argv else
+                       'Audio published. Apple Podcasts will pick it up when it refreshes your show.')
             subprocess.run(['/usr/bin/osascript', '-e',
-                            'display dialog "Audio published. Apple Podcasts will pick it up '
-                            'when it refreshes your show." buttons {"OK"} '
+                            'display dialog "' + message + '" buttons {"OK"} '
                             'default button "OK" with title "Escape Pod Cast"'])
     except (Failure, OSError, ValueError, ET.ParseError) as exc:
         print(str(exc), file=sys.stderr)
         if '--notify' in sys.argv:
-            subprocess.run(['/usr/bin/osascript', '-e',
+            answer = subprocess.run(['/usr/bin/osascript', '-e',
                             'display dialog "Publishing needs attention. Open Status.log '
-                            'in your Escape Pod Cast folder for details, then retry the file." '
-                            'buttons {"OK"} default button "OK" '
-                            'with title "Escape Pod Cast"'])
+                            'using the app’s Open publishing log action for details, then retry." '
+                            'buttons {"OK", "Open Log"} default button "Open Log" '
+                            'with title "Escape Pod Cast"'], capture_output=True, text=True)
+            if 'Open Log' in answer.stdout:
+                subprocess.run(['/usr/bin/open', str(HOME / 'Status.log')])
         sys.exit(1)

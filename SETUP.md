@@ -41,6 +41,21 @@ The app's menu provides **Open drop folder**, **Copy podcast link**, and **Open 
 
 The installer checks whether the feed is online. If GitHub has not published it yet, it tells you to allow a few minutes. Apple may reject an empty feed; publish one episode first if that happens. Apple controls refresh timing.
 
+## Add a YouTube episode
+
+1. If you have an older app, download the current version, run **START-HERE.command**, and choose **Update**. Keep your existing repository and saved connection.
+2. Open **Escape Pod Cast.app → Paste YouTube link…**, paste a link to one finished video, and click **Get Audio**.
+3. On the first import, click **Enable** to install the free helpers. Downloads total about 90 MB; allow 400 MB of free disk space and a few minutes. No Terminal typing or extra account is needed.
+4. Wait for the publication message, then refresh your show in Apple Podcasts.
+
+The helpers support the requested **macOS 11.7.11 and 15.7** targets. Install/update the app separately on each Mac; the saved connection and helpers are local to that Mac. For one shared feed, use one publishing Mac at a time to avoid competing updates.
+
+For dropping links, save a browser shortcut as `.webloc` or `.url`, or put just one YouTube URL into a plain-text `.txt` file. Drop that file onto the app or into **Drop Audio Here**. Choose **Set up / update YouTube…** once before using the folder for links. If dragging directly from a browser does nothing, use the paste action or a saved link file; direct URL dragging is not consistent across browsers.
+
+Video titles become episode titles. Repeating a link does not create a duplicate while its audio remains online, even if the link's tracking or time parameters change. Audio is public on GitHub and expires after 14 days. Only use material you have permission to copy and publicly host. Playlists, current live streams, and restricted/sign-in-only videos are not supported; browser cookies and access restrictions are not bypassed.
+
+If a normal public video fails, open the publishing log for its error. Check your connection, choose **Set up / update YouTube…**, then retry the link. A failed helper update leaves any working helpers in place. YouTube may still refuse a download. Videos without AAC/M4A audio cannot be imported by this feature; use a permitted local audio copy instead.
+
 ## If the installer does not open
 
 If macOS blocks the downloaded command, check **System Settings → Privacy & Security** for **Open Anyway** and reopen it. On older macOS releases, the equivalent section is in System Preferences. If Finder opens the file as text or says it is not executable, open Terminal, type `bash `, drag START-HERE.command into the Terminal window, and press Return. This is a fallback for the downloaded file, not part of normal setup.
@@ -49,7 +64,7 @@ The only required local runtime is **Python 3**. If missing, the installer expla
 
 ## What is installed
 
-The app is at `~/Applications/Escape Pod Cast.app`. Its program, watched folder, feed-address file, and log are in `~/Library/Application Support/Escape Pod Cast/`. A per-user job handles folder uploads and cleanup while your Mac is awake. The downloaded folder can be removed after successful installation.
+The app is at `~/Applications/Escape Pod Cast.app`. Its program, watched folder, feed-address file, log, and optional YouTube helpers are in `~/Library/Application Support/Escape Pod Cast/`. A per-user job handles folder uploads and cleanup while your Mac is awake. The downloaded folder can be removed after successful installation.
 
 Originals dropped onto the app are untouched. Successful watched-folder uploads move into its **Published** subfolder. Audio is removed from GitHub after 14 days, with cleanup catching up when the Mac wakes. Preserve important originals until you have verified Apple Podcasts' local retention behavior after remote expiry.
 

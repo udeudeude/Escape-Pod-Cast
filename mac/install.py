@@ -143,19 +143,29 @@ def connect(repo, token=None):
 
 
 def droplet_source(python, script, folder, log, feed_url):
-    return '''on publishFiles(droppedFiles)
+    return '''on runPublisher(argumentsList)
     set commandLine to quoted form of %s & " " & quoted form of %s & " --notify"
-    repeat with droppedFile in droppedFiles
-        set commandLine to commandLine & " " & quoted form of (POSIX path of droppedFile)
+    repeat with argumentText in argumentsList
+        set commandLine to commandLine & " " & quoted form of (argumentText as text)
     end repeat
     do shell script commandLine & " >> " & quoted form of %s & " 2>&1 &"
-    display notification "Uploading audio. You will see a completion message." with title "Escape Pod Cast"
+    display notification "Working. You will see a completion message; downloads may take a few minutes." with title "Escape Pod Cast"
+end runPublisher
+on publishFiles(droppedFiles)
+    set paths to {}
+    repeat with droppedFile in droppedFiles
+        set end of paths to POSIX path of droppedFile
+    end repeat
+    my runPublisher(paths)
 end publishFiles
 on open droppedFiles
     my publishFiles(droppedFiles)
 end open
+on open location linkURL
+    my runPublisher({"--youtube", linkURL})
+end open location
 on run
-    set selectedAction to choose from list {"Add audio…", "Open drop folder", "Copy podcast link", "Open publishing log"} with prompt "Choose an action, or drop audio straight onto the app icon." with title "Escape Pod Cast" default items {"Add audio…"} OK button name "Open"
+    set selectedAction to choose from list {"Add audio…", "Paste YouTube link…", "Set up / update YouTube…", "Open drop folder", "Copy podcast link", "Open publishing log"} with prompt "Choose an action, or drop audio or a saved YouTube link file onto the app icon." with title "Escape Pod Cast" default items {"Add audio…"} OK button name "Open"
     if selectedAction is false then return
     set selectedAction to item 1 of selectedAction
     if selectedAction is "Add audio…" then
@@ -165,6 +175,20 @@ on run
         on error number -128
             return
         end try
+    else if selectedAction is "Paste YouTube link…" then
+        try
+            set suggestedLink to ""
+            try
+                set clipboardText to the clipboard as text
+                if clipboardText starts with "https://" or clipboardText starts with "http://" then set suggestedLink to clipboardText
+            end try
+            set answer to display dialog "Paste a link to one YouTube video. Only import audio you have permission to copy and publicly host. Live streams and playlists are not supported." default answer suggestedLink buttons {"Cancel", "Get Audio"} default button "Get Audio" cancel button "Cancel" with title "Escape Pod Cast"
+            my runPublisher({"--youtube", text returned of answer})
+        on error number -128
+            return
+        end try
+    else if selectedAction is "Set up / update YouTube…" then
+        my runPublisher({"--youtube-setup"})
     else if selectedAction is "Open drop folder" then
         do shell script "/usr/bin/open " & quoted form of %s
     else if selectedAction is "Copy podcast link" then

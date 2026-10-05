@@ -14,6 +14,18 @@ Your Mac prepares the audio and updates a static feed. Your existing GitHub acco
 
 Opening the app also offers **Add audio…**, **Open drop folder**, **Copy podcast link**, and **Open publishing log**. Choose **Open drop folder** to use **Drop Audio Here**. The folder monitor publishes files after they have settled for about a minute, moving successful originals into **Published**. Direct app drops leave originals untouched. Titles come from filenames. There is no mandatory title editor or Publish button.
 
+## YouTube audio
+
+Open the app and choose **Paste YouTube link…**. Paste one video link and click **Get Audio**. The first import offers to download two free helpers, **yt-dlp** and **Node 22**, into the app's own folder. No extra account, payment, Homebrew, administrator access, or Terminal typing is needed. Downloads total about 90 MB; allow 400 MB of free disk space and a few minutes on a slow connection. Ordinary audio publishing does not need these helpers.
+
+You can also drop a saved YouTube `.webloc` or `.url` shortcut, or a `.txt` file containing just one video URL, onto the app or into **Drop Audio Here**. Enable the helpers from the app before using the watched folder. Browser URL drags vary between browsers and macOS versions; if a direct drag is ignored, save/drop a link file or use **Paste YouTube link…**. Playlists are not imported; a video link containing a playlist parameter imports only that video.
+
+Episodes use the video's title. Different links to the same video deduplicate while its audio is online, and a retry after a failed feed update reuses the completed upload. Temporary downloaded audio is removed afterward. The same 14-day expiry applies. **Set up / update YouTube…** refreshes the helpers when YouTube changes; failed downloads or compatibility checks leave the previous working helpers active.
+
+The compatibility target is **macOS 11.7.11 (Big Sur) and 15.7**, on Intel or Apple Silicon. Node stays on the 22 release line because its official Mac binaries support macOS 11; installing a newer major automatically could break Big Sur. The official yt-dlp Mac executable includes its Python runtime and JavaScript solver scripts. Downloads are checked against the official SHA-256 values before execution, and both helpers must start successfully before becoming active. See [Node 22 platform requirements](https://github.com/nodejs/node/blob/v22.x/BUILDING.md) and [yt-dlp's runtime requirements](https://github.com/yt-dlp/yt-dlp/wiki/EJS).
+
+Only import audio you have permission to copy and **publicly host**. Support is limited to accessible, finished videos with AAC/M4A audio; live/upcoming streams, members-only/private/age-restricted videos, sign-in requirements, and YouTube blocks are not bypassed. No browser cookies or credentials are read. The app ignores external yt-dlp settings/plugins and does not fetch extra executable components during import. If a video has no compatible audio stream, import a permitted local audio copy instead. YouTube availability is not guaranteed.
+
 ## Three participants
 
 | Participant | Job |
@@ -44,7 +56,7 @@ Updating an older installation migrates its episodes and removes the predictable
 
 ## Testing and scope
 
-Run `python3 -m unittest discover -s tests -v` for feed, retry, cleanup, delivery-validation, conversion, setup-boundary, and Mac network transport tests. Conversion tests need ffmpeg and ffprobe; the publisher itself does not require them on macOS. The native droplet and Keychain integration must be verified on a Mac, followed by an actual iPhone subscription/download test.
+Run `python3 -m unittest discover -s tests -v` for feed, retry, cleanup, delivery-validation, conversion, setup-boundary, Mac network transport, and YouTube intake/helper/retry tests. Conversion tests need ffmpeg and ffprobe; the publisher itself does not require them on macOS. The native droplet and Keychain integration must be verified on a Mac, followed by an actual YouTube import and iPhone subscription/download test. Automated tests simulate Mac 11.7.11 and 15.7 helper setup; this is not a claim that those Macs have been tested here.
 
 The obsolete Node server, browser uploader, Render blueprint, object-storage dependencies, and storage configuration were removed from the current branch. Historical commits remain intact. No old Releases or Actions runs existed during migration. Removing repository files does not close a separately deployed Render service or delete a Backblaze account/bucket.
 
