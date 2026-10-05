@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Guided Mac setup using native dialogs, without extra Python packages."""
+import argparse
 import json
 import os
 from pathlib import Path
@@ -56,6 +57,27 @@ def notify(message):
                    capture_output=True, text=True)
 
 
+def window_support():
+    result = subprocess.run([sys.executable, '-c',
+                             'import tkinter; assert tkinter.TkVersion >= 8.6'],
+                            capture_output=True, text=True)
+    return result.returncode == 0
+
+
+def choose_window_runtime():
+    if window_support():
+        return
+    action, _ = dialog('This Mac’s Python can publish audio, but it lacks the toolkit for '
+                       'the new app window.\n\n'
+                       '“Get Python” opens the official download. Install the Mac package, '
+                       'then reopen START-HERE.command. It includes the window toolkit.\n\n'
+                       '“Use Simple App” keeps the older native menus for now.',
+                       buttons=('Cancel', 'Use Simple App', 'Get Python'))
+    if action == 'Get Python':
+        subprocess.run(['/usr/bin/open', 'https://www.python.org/downloads/macos/'], check=True)
+        raise Cancelled()
+
+
 def token_url(repo):
     return 'https://github.com/settings/personal-access-tokens/new?' + urllib.parse.urlencode({
         'name': 'Escape Pod Cast Mac',
@@ -64,6 +86,21 @@ def token_url(repo):
         'expires_in': '365', 'contents': 'write', 'pages': 'write',
         'administration': 'write',
     })
+
+
+def repository_name(value):
+    value = value.strip().rstrip('/')
+    if value.startswith(('https://', 'http://')):
+        url = urllib.parse.urlsplit(value)
+        if (url.hostname != 'github.com' or url.username or url.password or url.port or
+                url.query or url.fragment):
+            raise ValueError('Paste the GitHub repository’s main page link.')
+        value = url.path.strip('/')
+    if value.endswith('.git'):
+        value = value[:-4]
+    if not publisher.re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', value):
+        raise ValueError('Paste the GitHub repository link, or enter owner/repository.')
+    return value
 
 
 def choose_repository(config=None):
@@ -87,16 +124,16 @@ def choose_repository(config=None):
                    '1. Sign in to your own account.\n'
                    '2. Choose your account as Owner; keep the repository name or choose your own.\n'
                    '3. Click “Create fork”.\n\n'
-                   'Then enter the owner/repository shown at the top of your new copy, '
+                   'Then paste the link to your new GitHub copy, or enter its owner/repository, '
                    'for example yourname/Escape-Pod-Cast.')
     else:
-        message = 'Enter your GitHub copy as owner/repository, for example yourname/Escape-Pod-Cast.'
+        message = 'Paste the link to your GitHub copy, or enter owner/repository, for example yourname/Escape-Pod-Cast.'
     while True:
         _, repo = dialog(message, text='', buttons=('Cancel', 'Continue'))
-        repo = repo.strip()
-        if publisher.re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo):
-            return repo
-        message = 'Enter both parts, separated by /, for example yourname/Escape-Pod-Cast.'
+        try:
+            return repository_name(repo)
+        except ValueError as exc:
+            message = str(exc)
 
 
 def connect(repo, token=None):
@@ -143,7 +180,7 @@ def connect(repo, token=None):
 
 
 def droplet_source(python, script, folder, log, feed_url):
-    return '''on runPublisher(argumentsList)
+    source = '''on runPublisher(argumentsList)
     set commandLine to quoted form of %s & " " & quoted form of %s & " --notify"
     repeat with argumentText in argumentsList
         set commandLine to commandLine & " " & quoted form of (argumentText as text)
@@ -200,13 +237,42 @@ on run
     end if
 end run
 ''' % tuple(literal(x) for x in (python, script, log, folder, feed_url, log, log))
+    gui = Path(script).with_name('app.py')
+    window = '''on windowAvailable()
+    try
+        do shell script quoted form of %s & " -c " & quoted form of %s
+        return true
+    on error
+        return false
+    end try
+end windowAvailable
+on runWindow(argumentsList)
+    set commandLine to quoted form of %s & " " & quoted form of %s
+    repeat with argumentText in argumentsList
+        set commandLine to commandLine & " " & quoted form of (argumentText as text)
+    end repeat
+    do shell script commandLine & " >> " & quoted form of %s & " 2>&1 &"
+end runWindow
+''' % tuple(literal(value) for value in (python,
+               'import tkinter; assert tkinter.TkVersion >= 8.6', python, gui, log))
+    source = source.replace('on runPublisher(argumentsList)\n',
+                            'on runPublisher(argumentsList)\n'
+                            '    if my windowAvailable() then\n'
+                            '        my runWindow(argumentsList)\n'
+                            '        return\n'
+                            '    end if\n', 1)
+    source = source.replace('on run\n', 'on run\n'
+                            '    if my windowAvailable() then\n'
+                            '        my runWindow({})\n'
+                            '        return\n'
+                            '    end if\n', 1)
+    return window + source
 
 
 def install_app(config):
     HOME.mkdir(parents=True, exist_ok=True)
     (HOME / 'Drop Audio Here').mkdir(exist_ok=True)
     script = HOME / 'escape_pod_cast.py'
-    shutil.copy2(HERE / 'escape_pod_cast.py', script)
     applescript = droplet_source(sys.executable, script, HOME / 'Drop Audio Here',
                                 HOME / 'Status.log', config['feed_url'])
     source = HOME / 'droplet.applescript'
@@ -216,9 +282,25 @@ def install_app(config):
     if staging.exists():
         shutil.rmtree(staging)
     subprocess.run(['/usr/bin/osacompile', '-o', str(staging), str(source)], check=True)
+    # Compile first, then replace complete runtime files and preserve the old
+    # app until the new bundle has been moved into place successfully.
+    for filename in ('escape_pod_cast.py', 'app.py', 'install.py'):
+        temporary = HOME / (filename + '.new')
+        shutil.copy2(HERE / filename, temporary)
+        os.replace(temporary, HOME / filename)
+    previous = APP.with_name('Escape Pod Cast previous.app')
+    if previous.exists():
+        shutil.rmtree(previous)
     if APP.exists():
-        shutil.rmtree(APP)
-    staging.rename(APP)
+        APP.rename(previous)
+    try:
+        staging.rename(APP)
+    except OSError:
+        if previous.exists():
+            previous.rename(APP)
+        raise
+    if previous.exists():
+        shutil.rmtree(previous)
     definition = {
         'Label': 'com.escapepodcast.publisher',
         'ProgramArguments': [sys.executable, str(script), '--maintain'],
@@ -235,9 +317,10 @@ def install_app(config):
     subprocess.run(['/bin/launchctl', 'bootstrap', target, str(AGENT)], check=True)
 
 
-def main():
+def main(result_file=None):
     if sys.platform != 'darwin':
         raise RuntimeError('Open START-HERE.command on your Mac.')
+    choose_window_runtime()
     config = None
     if publisher.CONFIG.exists():
         try:
@@ -273,7 +356,7 @@ def main():
         status += ('\n\nYour podcast address has changed. Follow this new link in Apple Podcasts. '
                    'The old predictable feed is removed; existing episodes are kept.')
     button, _ = dialog('Your Mac app is installed.\n\n'
-                       '1. Open the app and choose “Add audio…” for your first file.\n'
+                       '1. Open the app and click “Add audio…” for your first file.\n'
                        '2. On iPhone: Apple Podcasts → Library → ••• → Follow a Show by URL.\n'
                        '3. Paste the podcast link and enable automatic downloads.\n\n'
                        '%s\n\n%s\n\n'
@@ -281,11 +364,15 @@ def main():
                        (config['feed_url'], status), buttons=('Done', 'Open App'))
     if button == 'Open App':
         subprocess.run(['/usr/bin/open', str(APP)], check=True)
+    if result_file is not None:
+        result_file.write_text(json.dumps({'installed': True}))
 
 
 if __name__ == '__main__':
     try:
-        main()
+        parser = argparse.ArgumentParser(description=__doc__)
+        parser.add_argument('--result-file', type=Path)
+        main(parser.parse_args().result_file)
     except Cancelled:
         sys.exit(0)
     except (RuntimeError, OSError, ValueError, subprocess.CalledProcessError) as exc:

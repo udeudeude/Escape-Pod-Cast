@@ -8,19 +8,23 @@ Your Mac prepares the audio and updates a static feed. Your existing GitHub acco
 
 ## Everyday use
 
-1. Drop one or several files onto **Escape Pod Cast.app**, optionally kept in your Dock.
-2. The app uploads in the background and confirms publication, or tells you where to find an error.
-3. Apple Podcasts fetches the new episode on its next refresh, with automatic downloads enabled.
+1. Open **Escape Pod Cast.app** and click **Add audio…**, or drop files onto its Dock/Finder icon.
+2. Watch the current stage and activity list in the app. Add more items whenever you like; they wait their turn.
+3. When an item says **Published**, refresh your show in Apple Podcasts. Enable automatic downloads on the iPhone.
 
-Opening the app also offers **Add audio…**, **Open drop folder**, **Copy podcast link**, and **Open publishing log**. Choose **Open drop folder** to use **Drop Audio Here**. The folder monitor publishes files after they have settled for about a minute, moving successful originals into **Published**. Direct app drops leave originals untouched. Titles come from filenames. There is no mandatory title editor or Publish button.
+The single window shows preparation, conversion, downloads, upload, playback checks, and feed updates, with an animated indicator and elapsed time. The indicator shows that a task is active; it is not an invented percentage. Failures include the actual problem and a next step beside **Retry selected item**. Successful items stay published when another item fails. Queue and activity records survive closing the window or restarting the Mac. The folder monitor resumes queued items while the Mac is awake and connected.
+
+**Connect iPhone…** copies the podcast link and gives the subscription steps. **Settings & help…** includes connection/feed checks, reconnection, YouTube helper updates, app updates, and the detailed log. **Update this app…** downloads the current official code and opens setup; choose **Update** to keep the saved connection, episodes, address, and activity. After successful setup the window reopens with the updated app. Cancelling setup keeps the current app. The update is pinned to one GitHub commit and extracts only known app files. No Terminal typing or manually unzipping is needed for subsequent updates.
+
+The optional **Open drop folder** action in Settings opens **Drop Audio Here**. Folder uploads settle for about a minute; successful originals move into **Published**. Folder activity appears in the same window. Direct app drops leave originals untouched. Titles come from filenames. **Remove from queue** works on waiting/failed items. For a failed drop-folder item it keeps the original in **Not Published**, stopping automatic retries; move it back when ready. It does not delete published audio. Work already publishing is allowed to finish.
 
 ## YouTube audio
 
-Open the app and choose **Paste YouTube link…**. Paste one video link and click **Get Audio**. The first import offers to download two free helpers, **yt-dlp** and **Node 22**, into the app's own folder. No extra account, payment, Homebrew, administrator access, or Terminal typing is needed. Downloads total about 90 MB; allow 400 MB of free disk space and a few minutes on a slow connection. Ordinary audio publishing does not need these helpers.
+Open the app, paste one video URL into **YouTube video link** (or click **Paste**), and click **Get audio**. The first import offers to download two free helpers, **yt-dlp** and **Node 22**, into the app's own folder. No extra account, payment, Homebrew, administrator access, or Terminal typing is needed. Downloads total about 90 MB; allow 400 MB of free disk space and a few minutes on a slow connection. Ordinary audio publishing does not need these helpers.
 
-You can also drop a saved YouTube `.webloc` or `.url` shortcut, or a `.txt` file containing just one video URL, onto the app or into **Drop Audio Here**. Enable the helpers from the app before using the watched folder. Browser URL drags vary between browsers and macOS versions; if a direct drag is ignored, save/drop a link file or use **Paste YouTube link…**. Playlists are not imported; a video link containing a playlist parameter imports only that video.
+You can also drop a saved YouTube `.webloc` or `.url` shortcut, or a `.txt` file containing just one video URL, onto the app icon or into **Drop Audio Here**. Enable the helpers from Settings before using the watched folder. Browser URL drags vary between browsers and macOS versions; if a direct drag is ignored, save/drop a link file or use the URL field. Dropping onto the window itself is not supported; use the app icon. Playlists are not imported; a video link containing a playlist parameter imports only that video.
 
-Episodes use the video's title. Different links to the same video deduplicate while its audio is online, and a retry after a failed feed update reuses the completed upload. Temporary downloaded audio is removed afterward. The same 14-day expiry applies. **Set up / update YouTube…** refreshes the helpers when YouTube changes; failed downloads or compatibility checks leave the previous working helpers active.
+Episodes use the video's title. Different links to the same video deduplicate while its audio is online, and a retry after a failed feed update reuses the completed upload. Temporary downloaded audio is removed afterward. The same 14-day expiry applies. **Settings → Set up / update YouTube…** refreshes the helpers when YouTube changes; failed downloads or compatibility checks leave the previous working helpers active. Already-current helpers are not downloaded again. Successful updates keep one previous working helper bundle and remove older complete helper folders.
 
 The compatibility target is **macOS 11.7.11 (Big Sur) and 15.7**, on Intel or Apple Silicon. Node stays on the 22 release line because its official Mac binaries support macOS 11; installing a newer major automatically could break Big Sur. The official yt-dlp Mac executable includes its Python runtime and JavaScript solver scripts. Downloads are checked against the official SHA-256 values before execution, and both helpers must start successfully before becoming active. See [Node 22 platform requirements](https://github.com/nodejs/node/blob/v22.x/BUILDING.md) and [yt-dlp's runtime requirements](https://github.com/yt-dlp/yt-dlp/wiki/EJS).
 
@@ -34,7 +38,7 @@ Only import audio you have permission to copy and **publicly host**. Support is 
 | GitHub | Pages serves the feed at a random address; one `audio` release holds temporary audio |
 | iPhone / Apple Podcasts | Follows the feed URL directly and downloads episodes |
 
-The local program needs Python 3 and uses its standard library. No package installation, Git commands, GitHub command-line tool, or web application is needed for everyday use. macOS provides the app compiler, Keychain credential storage, audio converter, and scheduled folder monitor. Network requests on macOS use the included curl tool, keeping setup and publishing on the same network path. Optional ffmpeg expands supported audio formats.
+The local program needs Python 3 and uses its standard library, including Tk for the app window. The official python.org Mac package includes that toolkit. Setup prefers an installed Python with it. If the toolkit is missing, setup offers the official download or **Use Simple App** with the older native menus. No Python packages, Git commands, GitHub command-line tool, or web application is needed for everyday use. macOS provides the app compiler, Keychain credential storage, audio converter, and scheduled folder monitor. Network requests on macOS use the included curl tool. Optional ffmpeg expands supported audio formats.
 
 ## Audio and retention
 
@@ -56,12 +60,12 @@ Updating an older installation migrates its episodes and removes the predictable
 
 ## Testing and scope
 
-Run `python3 -m unittest discover -s tests -v` for feed, retry, cleanup, delivery-validation, conversion, setup-boundary, Mac network transport, and YouTube intake/helper/retry tests. Conversion tests need ffmpeg and ffprobe; the publisher itself does not require them on macOS. The native droplet and Keychain integration must be verified on a Mac, followed by an actual YouTube import and iPhone subscription/download test. Automated tests simulate Mac 11.7.11 and 15.7 helper setup; this is not a claim that those Macs have been tested here.
+Run `python3 -m unittest discover -s tests -v` for feed, retry, cleanup, delivery-validation, conversion, setup-boundary, Mac network transport, YouTube, durable queue, recovery, cancellation, and update tests. GUI tests run when a display is available, otherwise they are explicitly skipped. Conversion tests need ffmpeg and ffprobe; the publisher itself does not require them on macOS. The window, native droplet, and Keychain integration must be verified on a Mac, followed by an actual YouTube import and iPhone download/playback test. Automated tests simulate Mac 11.7.11 and 15.7 helper setup; this is not a claim that those Macs have been tested here.
 
 The obsolete Node server, browser uploader, Render blueprint, object-storage dependencies, and storage configuration were removed from the current branch. Historical commits remain intact. No old Releases or Actions runs existed during migration. Removing repository files does not close a separately deployed Render service or delete a Backblaze account/bucket.
 
 ## Independent copies
 
-The same download is for every Mac user. The installer guides **Create My Copy**, or **Use Existing** for a repository already created. It never defaults a new user to the author's publishing repository. A fork gets a new random address and a feed without the parent's copied episodes. Each person's Mac, GitHub repository, Release assets, and saved credential operate independently. There is no shared service operated by the author. Use one publishing Mac per feed. This distribution currently supports macOS.
+The same download is for every Mac user. The installer guides **Create My Copy**, or **Use Existing** for a repository already created. You can paste the full GitHub repository link instead of typing owner/repository. It never defaults a new user to the author's publishing repository. A fork gets a new random address and a feed without the parent's copied episodes. Each person's repository, audio, and credential operate independently. There is no shared service operated by the author. Install on either supported Mac and connect the same personal repository to use the same feed; queues, history, and Keychain connections remain local to each Mac. Publish from one Mac at a time. A competing feed update fails safely and can be retried. This distribution currently supports macOS.
 
 MIT license.

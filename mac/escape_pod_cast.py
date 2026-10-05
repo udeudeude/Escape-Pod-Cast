@@ -24,6 +24,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 import xml.etree.ElementTree as ET
 
 HOME = Path.home() / 'Library/Application Support/Escape Pod Cast'
@@ -52,6 +53,268 @@ class Failure(RuntimeError):
 
 class NetworkFailure(Failure):
     pass
+
+
+CURRENT_JOB = None
+
+
+def activity_folder():
+    return HOME / 'Activity'
+
+
+def job_path(job_id):
+    if not re.fullmatch(r'[0-9a-f]{32}', job_id):
+        raise Failure('This publishing task is invalid. Add the item again.')
+    return activity_folder() / (job_id + '.json')
+
+
+def save_job(job):
+    path = job_path(job['id'])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    job['updated'] = dt.datetime.now(dt.timezone.utc).isoformat()
+    # Readers always see either the previous or the complete new state.
+    with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False) as output:
+        temp = Path(output.name)
+        json.dump(job, output, ensure_ascii=True)
+    try:
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def load_job(job_id):
+    job = json.loads(job_path(job_id).read_text())
+    if (job.get('id') != job_id or job.get('kind') not in ('file', 'youtube', 'tools', 'check') or
+            job.get('state') not in ('queued', 'running', 'done', 'failed', 'cancelled') or
+            not all(isinstance(job.get(key), str) for key in ('source', 'label', 'created', 'stage'))):
+        raise Failure('This publishing task is invalid. Add the item again.')
+    return job
+
+
+def list_jobs():
+    folder = activity_folder()
+    if not folder.exists():
+        return []
+    jobs = []
+    for path in folder.glob('*.json'):
+        try:
+            jobs.append(load_job(path.stem))
+        except (Failure, OSError, ValueError, TypeError, AttributeError):
+            continue
+    return sorted(jobs, key=lambda job: job.get('created', ''))
+
+
+def create_job(kind, source=''):
+    if kind == 'youtube':
+        source, video = youtube_url(source)
+        label = 'YouTube · ' + video
+    elif kind == 'file':
+        source = str(Path(source).expanduser().absolute())
+        if not Path(source).is_file():
+            raise Failure('That file is no longer available. Choose it again.')
+        label = Path(source).name
+    elif kind in ('tools', 'check'):
+        label = 'Set up YouTube' if kind == 'tools' else 'Check connection'
+    else:
+        raise Failure('Unknown app action.')
+    job = {'id': uuid.uuid4().hex, 'kind': kind, 'source': source, 'label': label,
+           'created': dt.datetime.now(dt.timezone.utc).isoformat(), 'state': 'queued',
+           'stage': 'Waiting to start', 'error': '', 'help': '', 'attempts': 0, 'pid': None}
+    save_job(job)
+    return job
+
+
+def job_progress(stage, **values):
+    if CURRENT_JOB is not None:
+        CURRENT_JOB.update(stage=stage, **values)
+        save_job(CURRENT_JOB)
+
+
+def recovery_hint(message):
+    text = message.lower()
+    if any(word in text for word in ('401', '403', 'credential', 'keychain', 'token expired')):
+        return 'Open Settings → Reconnect GitHub. Reuse your saved connection if it still works.'
+    if any(word in text for word in ('network', 'connection', 'timed out', 'server could not')):
+        return 'Check your internet connection, then click Retry. You do not need a new GitHub token.'
+    if 'youtube' in text or 'video' in text:
+        return 'For a finished public video, update the YouTube helpers in Settings, then retry. Restricted videos may remain unavailable.'
+    if 'convert' in text or 'audio format' in text:
+        return 'Try an MP3 or AAC-encoded M4A copy. Keep the original; renaming its extension will not convert it.'
+    if 'no such file' in text or 'file is no longer' in text:
+        return 'Restore the original file to its location, or use Add audio to choose it again.'
+    if 'concurrent' in text or 'sha' in text:
+        return 'Another Mac may have updated this feed. Click Retry; completed uploads are reused.'
+    return 'Click Retry when ready. Your original is untouched and completed uploads are reused. Details are available below.'
+
+
+@contextlib.contextmanager
+def job_lock(job_id, blocking=True):
+    path = job_path(job_id).with_suffix('.lock')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('w') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        except BlockingIOError:
+            yield False
+            return
+        yield True
+
+
+def recover_jobs():
+    """A closed window does not cancel work; only recover genuinely dead workers."""
+    for job in list_jobs():
+        if job.get('state') != 'running':
+            continue
+        with job_lock(job['id'], blocking=False) as acquired:
+            if not acquired:
+                continue
+            job = load_job(job['id'])
+            if job['state'] != 'running':
+                continue
+            try:
+                pid = int(job['pid'])
+                if pid <= 0:
+                    raise ValueError()
+                os.kill(pid, 0)
+            except PermissionError:
+                continue
+            except (ProcessLookupError, ValueError, TypeError):
+                job.update(state='failed', stage='Interrupted', pid=None,
+                           error='Publishing stopped before a completion result was saved.',
+                           help='Click Retry. A completed audio upload will be reused.')
+                save_job(job)
+
+
+def retry_job(job_id):
+    # A failed job is no longer owned by a live publisher. Queue it without
+    # blocking the window behind an unrelated long upload.
+    with job_lock(job_id, blocking=False) as acquired:
+        if not acquired:
+            raise Failure('This task is finishing. Try Retry again in a moment.')
+        job = load_job(job_id)
+        if job['state'] != 'failed':
+            raise Failure('Only a failed or interrupted task needs a retry.')
+        job.update(state='queued', stage='Waiting to retry', error='', help='', pid=None)
+        save_job(job)
+    return job
+
+
+def cancel_job(job_id):
+    with job_lock(job_id, blocking=False) as acquired:
+        if not acquired:
+            raise Failure('This item is already publishing. Let it finish; queued items can be removed.')
+        job = load_job(job_id)
+        if job['state'] not in ('queued', 'failed'):
+            raise Failure('Only waiting or failed items can be removed from the queue.')
+        source = Path(job['source'])
+        message = 'Removed from the queue. No original or published audio was deleted.'
+        if job.get('origin') == 'folder' and source.parent == HOME / 'Drop Audio Here' and source.exists():
+            hold = source.parent / 'Not Published'
+            hold.mkdir(exist_ok=True)
+            destination = hold / source.name
+            if destination.exists():
+                destination = hold / (source.stem + '-' + job_id[:12] + source.suffix)
+            shutil.move(str(source), str(destination))
+            message = 'The original is kept in the drop folder’s Not Published subfolder. Move it back to try again.'
+        job.update(state='cancelled', stage='Removed from queue', error='', help='', pid=None,
+                   message=message)
+        save_job(job)
+
+
+def archive_source(path):
+    done = HOME / 'Drop Audio Here' / 'Published'
+    done.mkdir(parents=True, exist_ok=True)
+    destination = done / path.name
+    if destination.exists():
+        destination = done / (path.stem + '-' + fingerprint(path)[:12] + path.suffix)
+    shutil.move(str(path), str(destination))
+
+
+@contextlib.contextmanager
+def record_folder_file(path):
+    global CURRENT_JOB
+    source = str(path.absolute())
+    previous = next((job for job in reversed(list_jobs()) if job.get('source') == source and
+                     job.get('origin') == 'folder' and job['state'] in ('failed', 'queued')), None)
+    job = previous or create_job('file', source)
+    with job_lock(job['id']):
+        job.update(origin='folder', state='running', pid=os.getpid(), stage='Starting', error='', help='',
+                   started=dt.datetime.now(dt.timezone.utc).isoformat(),
+                   attempts=job.get('attempts', 0) + 1)
+        CURRENT_JOB = job
+        save_job(job)
+        try:
+            yield
+            job.update(state='done', stage='Published', pid=None,
+                       message='Published. The original moves into the drop folder’s Published subfolder.')
+        except (Failure, OSError, ValueError, ET.ParseError) as exc:
+            job.update(state='failed', stage='Needs attention', pid=None,
+                       error=str(exc), help=recovery_hint(str(exc)))
+            raise
+        finally:
+            save_job(job)
+            CURRENT_JOB = None
+
+
+def perform_job(job):
+    if job['kind'] == 'tools':
+        install_youtube_tools()
+        return 'YouTube is ready. Paste a video link to add an episode.'
+    if not CONFIG.exists():
+        raise Failure('Your connection is not set up. Open Settings → Reconnect GitHub.')
+    config = json.loads(CONFIG.read_text())
+    job_progress('Connecting to GitHub')
+    client = GitHub(config['repo'], get_token(config['repo']))
+    if job['kind'] == 'check':
+        client.request('GET', '')
+        client.request('GET', '/releases/tags/audio')
+        job_progress('Checking your podcast address')
+        root = ET.fromstring(public_bytes(config['feed_url']))
+        if root.find('channel') is None:
+            raise Failure('The podcast address did not return a readable feed.')
+        return 'GitHub and your podcast feed are reachable. Apple controls refresh timing.'
+    release = client.request('GET', '/releases/tags/audio')
+    now = dt.datetime.now(dt.timezone.utc)
+    if job['kind'] == 'youtube':
+        publish_youtube(client, release, job['source'], now)
+    else:
+        source = Path(job['source'])
+        if source.suffix.lower() in LINK_TYPES:
+            publish_youtube(client, release, link_file(source), now)
+        else:
+            publish(client, release, source, now)
+        if job.get('origin') == 'folder' and source.parent == HOME / 'Drop Audio Here':
+            archive_source(source)
+    return 'Published. Refresh your show in Apple Podcasts; automatic downloads follow its schedule.'
+
+
+def run_job(job_id, blocking=True):
+    global CURRENT_JOB
+    with locked(blocking=blocking) as acquired:
+        if not acquired:
+            return
+        with job_lock(job_id):
+            job = load_job(job_id)
+            # The GUI and folder monitor can pick the same queued job. Claim only here.
+            if job['state'] != 'queued':
+                return
+            job.update(state='running', pid=os.getpid(), stage='Starting', error='', help='',
+                       started=dt.datetime.now(dt.timezone.utc).isoformat(),
+                       attempts=job.get('attempts', 0) + 1)
+            CURRENT_JOB = job
+            save_job(job)
+            try:
+                result = perform_job(job)
+                job.update(state='done', stage='Ready' if job['kind'] in ('tools', 'check') else 'Published',
+                           message=result, pid=None)
+            except (Failure, OSError, ValueError, TypeError, KeyError, ET.ParseError) as exc:
+                message = str(exc)
+                print('Failed: %s: %s' % (job['label'], message), file=sys.stderr, flush=True)
+                job.update(state='failed', stage='Needs attention', error=message,
+                           help=recovery_hint(message), pid=None)
+            finally:
+                save_job(job)
+                CURRENT_JOB = None
 
 
 def curl_value(value):
@@ -172,6 +435,7 @@ class GitHub:
             page += 1
 
     def upload(self, release, path, name, mime, label=None):
+        job_progress('Uploading audio — slow connections may take a while')
         # Stream from disk; do not hold a potentially 2 GiB episode in memory.
         url = urllib.parse.urlsplit(release['upload_url'].split('{')[0])
         if url.scheme != 'https' or url.hostname != 'uploads.github.com':
@@ -334,6 +598,7 @@ def remove_assets_from_feed(root, assets):
 
 
 def prepare_audio(source, directory):
+    job_progress('Checking the audio format')
     if not source.is_file() or source.stat().st_size == 0:
         raise Failure('Choose a nonempty audio file: ' + str(source))
     suffix = source.suffix.lower()
@@ -362,6 +627,7 @@ def prepare_audio(source, directory):
     if suffix == '.m4a' and codec in ('aac', 'aach', 'aacl'):
         return source, '.m4a', 'audio/mp4'
     target = directory / 'episode.m4a'
+    job_progress('Converting audio for Apple Podcasts')
     converter = shutil.which('ffmpeg')
     if converter:
         args = [converter, '-v', 'error', '-nostdin', '-y', '-i', str(source),
@@ -388,6 +654,7 @@ def fingerprint(path):
 
 
 def verify_enclosure(url, size):
+    job_progress('Checking the uploaded audio can be played')
     # Use the public download URL, with no GitHub credential. Follow redirects
     # exactly as the podcast client will, and demand actual partial delivery.
     if sys.platform == 'darwin':
@@ -413,6 +680,7 @@ def verify_enclosure(url, size):
 
 
 def publish(client, release, source, now, title=None, identity=None):
+    job_progress('Preparing audio', label=title or source.name)
     with tempfile.TemporaryDirectory() as directory:
         # Snapshot before conversion/upload so originals cannot change beneath
         # a streaming upload. Fail if a copy into the watched folder is active.
@@ -447,6 +715,7 @@ def publish(client, release, source, now, title=None, identity=None):
         verify_enclosure(asset['browser_download_url'], asset['size'])
         # Read after upload. SHA-conditional write fails safely if another publisher
         # changes the feed. Retrying reuses the already completed audio upload.
+        job_progress('Adding the episode to your podcast')
         root, sha = client.read_feed()
         if add_episode(root, asset, title or source.stem, now):
             client.write_feed(root, sha)
@@ -518,6 +787,7 @@ def download_tool(url, destination, digest=None, limit=150 * 1024 ** 2):
                            'https://nodejs.org/download/release/',
                            'https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest')):
         raise Failure('Unexpected helper download address.')
+    job_progress('Downloading YouTube helpers — this may take a few minutes')
     result = subprocess.run(['/usr/bin/curl', '-q', '--fail', '--silent', '--show-error',
                              '--location', '--max-redirs', '5', '--proto', '=https',
                              '--proto-redir', '=https', '--connect-timeout', '15',
@@ -530,6 +800,7 @@ def download_tool(url, destination, digest=None, limit=150 * 1024 ** 2):
         raise Failure('The helper download was empty or too large.')
     if digest and fingerprint(destination) != digest:
         raise Failure('A helper download failed its safety check. Nothing was installed; retry.')
+    job_progress('Checking the downloaded helper')
 
 
 def node_download(sums, machine):
@@ -602,6 +873,7 @@ def install_youtube_tools():
                'The podcast audio is public on GitHub.', buttons=('Cancel', 'Enable'))
     home = HOME / 'YouTube Tools'
     home.mkdir(parents=True, exist_ok=True)
+    previous_tools = active_youtube_tools()
     print('Downloading and checking YouTube helpers…', flush=True)
     with tempfile.TemporaryDirectory(prefix='staging-', dir=home) as temp:
         staging = Path(temp)
@@ -617,13 +889,23 @@ def install_youtube_tools():
                 raise ValueError()
         except (KeyError, ValueError, TypeError, StopIteration):
             raise Failure('Could not verify the official yt-dlp release. Retry later.') from None
-        download_tool(asset['browser_download_url'], staging / 'yt-dlp', digest[7:])
-        (staging / 'yt-dlp').chmod(0o700)
+        yt_digest = digest[7:]
         download_tool(NODE_SUMS, sums, limit=128 * 1024)
         url, digest, filename = node_download(sums.read_text(), platform.machine())
+        try:
+            installed_settings = json.loads((home / 'active.json').read_text())
+        except (OSError, ValueError):
+            installed_settings = {}
+        if (previous_tools and installed_settings.get('yt_dlp') == tag and
+                installed_settings.get('node') == filename):
+            print('Your YouTube helpers are already up to date.', flush=True)
+            return previous_tools
+        download_tool(asset['browser_download_url'], staging / 'yt-dlp', yt_digest)
+        (staging / 'yt-dlp').chmod(0o700)
         download_tool(url, archive, digest)
         unpack_node(archive, filename, staging)
         for executable in ('node', 'yt-dlp'):
+            job_progress('Checking helper compatibility with this Mac')
             try:
                 result = subprocess.run([str(staging / executable), '--version'],
                                         capture_output=True, text=True, timeout=60,
@@ -645,11 +927,25 @@ def install_youtube_tools():
         pointer.write_text(json.dumps({'bundle': name, 'yt_dlp': tag,
                                        'node': filename}))
         os.replace(pointer, home / 'active.json')
+    # Keep the current and one previous working bundle; remove only our complete,
+    # known helper folders. Extra user files cause a folder to be left alone.
+    keep = {name}
+    if previous_tools:
+        keep.add(previous_tools[0].parent.name)
+    for bundle in home.iterdir():
+        if (bundle.name not in keep and re.fullmatch(r'bundle-[0-9a-f]{16}', bundle.name) and
+                bundle.is_dir() and not bundle.is_symlink()):
+            try:
+                if {path.name for path in bundle.iterdir()} == {'yt-dlp', 'node', 'Node LICENSE.txt'}:
+                    shutil.rmtree(bundle)
+            except OSError:
+                pass  # A cleanup problem must not report a verified update as failed.
     print('YouTube helpers are ready.', flush=True)
     return active_youtube_tools()
 
 
 def download_youtube(url, video, directory, tools):
+    job_progress('Getting YouTube audio — downloads may take a while')
     downloader, node = tools
     output = directory / 'download.log'
     args = [str(downloader), '--ignore-config', '--no-plugin-dirs', '--no-js-runtimes',
@@ -707,6 +1003,7 @@ def publish_youtube(client, release, value, now, prompt=True):
                      a.get('state') == 'uploaded' and stamp(a['created_at']) > now - RETENTION), None)
     if existing:
         # A failed feed update can be retried without redownloading/reuploading audio.
+        job_progress('Reusing your completed audio upload', label=existing.get('label') or 'YouTube · ' + video)
         verify_enclosure(existing['browser_download_url'], existing['size'])
         root, sha = client.read_feed()
         if add_episode(root, existing, existing.get('label') or 'YouTube ' + video, now):
@@ -810,22 +1107,26 @@ def setup_locked(repo, token=None, progress=None):
 
 
 @contextlib.contextmanager
-def locked():
+def locked(blocking=True):
     HOME.mkdir(parents=True, exist_ok=True)
     with (HOME / 'publisher.lock').open('w') as lock:
-        # Direct app drops wait; the folder monitor skips if another job is busy.
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        yield
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        except BlockingIOError:
+            yield False
+            return
+        yield True
 
 
-def process_files(client, release, paths, now, prompt=True):
+def process_files(client, release, paths, now, prompt=True, track=False):
     failed = []
     for path in paths:
         try:
-            if path.suffix.lower() in LINK_TYPES:
-                publish_youtube(client, release, link_file(path), now, prompt=prompt)
-            else:
-                publish(client, release, path, now)
+            with record_folder_file(path) if track else contextlib.nullcontext():
+                if path.suffix.lower() in LINK_TYPES:
+                    publish_youtube(client, release, link_file(path), now, prompt=prompt)
+                else:
+                    publish(client, release, path, now)
         except (Failure, OSError, ValueError, ET.ParseError) as exc:
             print('Failed: %s: %s' % (path.name, exc), file=sys.stderr, flush=True)
             failed.append(path)
@@ -839,12 +1140,24 @@ def main():
     parser.add_argument('--notify', action='store_true')
     parser.add_argument('--youtube', metavar='VIDEO_URL')
     parser.add_argument('--youtube-setup', action='store_true')
+    parser.add_argument('--job', metavar='TASK_ID')
     parser.add_argument('files', nargs='*', type=Path)
     args = parser.parse_args()
+    if args.job:
+        run_job(args.job)
+        return
     if args.setup:
         setup(args.setup)
         return
-    with locked():
+    if args.maintain:
+        recover_jobs()
+        # Queued items survive closing the window or restarting the Mac.
+        for job in list_jobs():
+            if job['state'] == 'queued':
+                run_job(job['id'], blocking=False)
+    with locked(blocking=not args.maintain) as acquired:
+        if not acquired:
+            return
         if args.youtube_setup:
             install_youtube_tools()
             return
@@ -878,14 +1191,11 @@ def main():
         if args.maintain:
             done = inbox / 'Published'
             done.mkdir(parents=True, exist_ok=True)
-            errors = process_files(client, release, candidates, now, prompt=False)
+            errors = process_files(client, release, candidates, now, prompt=False, track=True)
             failed.extend(errors)
             for path in candidates:
                 if path not in errors:
-                    destination = done / path.name
-                    if destination.exists():
-                        destination = done / (path.stem + '-' + fingerprint(path)[:12] + path.suffix)
-                    shutil.move(str(path), str(destination))
+                    archive_source(path)
         cleanup(client, release, now)
         (HOME / 'last-cleanup').touch()
         if failed:
