@@ -1,4 +1,4 @@
-<?xml version='1.0' encoding='UTF-8'?>
+<?xml version='1.0' encoding='utf-8'?>
 <rss xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" version="2.0">
   <channel>
     <title>Escape Pod Cast</title>
@@ -9,5 +9,5 @@
     <itunes:explicit>false</itunes:explicit>
     <itunes:block>Yes</itunes:block>
     <itunes:type>episodic</itunes:type>
-  <item><title>Heart Beat &amp; Movement Baby 1</title><guid isPermaLink="false">escape-pod-cast:asset-610731699</guid><pubDate>Sun, 04 Oct 2026 21:38:04 +0000</pubDate><description>Added from your Mac.</description><enclosure url="https://github.com/udeudeude/Escape-Pod-Cast/releases/download/audio/epc-1cbdc07dfb1362060e8da8edef505fe9e13b9ff44547de7204c5545e3f977fb1.m4a" length="1748260" type="audio/mp4" /><itunes:explicit>false</itunes:explicit></item></channel>
+  <item><title>Heart Beat &amp; Movement Baby 1</title><guid isPermaLink="false">escape-pod-cast:asset-610731699</guid><pubDate>Sun, 04 Oct 2026 21:38:04 +0000</pubDate><description>Added from your Mac.</description><enclosure url="https://github.com/udeudeude/Escape-Pod-Cast/releases/download/audio/epc-1cbdc07dfb1362060e8da8edef505fe9e13b9ff44547de7204c5545e3f977fb1.m4a" length="1748260" type="audio/mp4" /><itunes:explicit>false</itunes:explicit></item><item><title>Heart Beat &amp; Movement Baby 1</title><guid isPermaLink="false">escape-pod-cast:asset-612945487</guid><pubDate>Mon, 05 Oct 2026 15:29:17 +0000</pubDate><description>Added from your Mac.</description><enclosure url="https://github.com/udeudeude/Escape-Pod-Cast/releases/download/audio/epc-1cbdc07dfb1362060e8da8edef505fe9e13b9ff44547de7204c5545e3f977fb1.mp3" length="3086307" type="audio/mpeg" /><itunes:explicit>false</itunes:explicit></item></channel>
 </rss>
