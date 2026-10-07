@@ -118,6 +118,91 @@ class DropTests(AppFixture):
                              (20, expected_y, 600, 96))
 
 
+class RadioDesignTests(unittest.TestCase):
+    def test_dial_tracks_real_stages_not_percentages(self):
+        job = {'kind': 'file', 'state': 'queued'}
+        self.assertEqual(app.transmission_position(job)[:2], (0, 'WAITING'))
+        job.update(state='running', stage='Converting source audio')
+        self.assertEqual(app.transmission_position(job)[:2], (1, 'PREPARING'))
+        for stage in ('Uploading', 'Checking playback', 'Updating feed'):
+            job['stage'] = stage
+            self.assertEqual(app.transmission_position(job)[:2], (2, 'TRANSMITTING'))
+        job['state'] = 'done'
+        self.assertEqual(app.transmission_position(job)[:2], (3, 'ON AIR'))
+        job['kind'] = 'check'
+        self.assertEqual(app.transmission_position(job)[:2], (0, 'READY'))
+        job['state'] = 'failed'
+        self.assertEqual(app.transmission_position(job)[:2], (0, 'CHECK SIGNAL'))
+        self.assertEqual(app.transmission_position(job, updating=True)[:2], (0, 'TUNING'))
+        self.assertEqual(app.transmission_position()[:2], (0, 'READY'))
+
+    def test_hatch_and_dial_stay_in_bounds_at_small_and_large_widths(self):
+        window = app.Window.__new__(app.Window)
+        window.drop_preview, window.hatch_pulse, window.lamp_tick = (None, False), 0, False
+        window.jobs, window.selected, window.updating, window.drop_bridge = {}, None, False, None
+        window.drop_hint = 'Drop here — publishing starts automatically'
+        for width in (618, 828):
+            canvas = Mock()
+            canvas.winfo_width.return_value = width
+            window.drop_zone = canvas
+            window.draw_drop()
+            labels = [call.kwargs['text'] for call in canvas.create_text.call_args_list]
+            self.assertIn('FEED ME AUDIO', labels)
+            self.assertIn('READY', labels)
+            for method in (canvas.create_oval, canvas.create_line):
+                for call in method.call_args_list:
+                    coords = call.args
+                    self.assertTrue(all(0 <= value <= width for value in coords[::2]))
+                    self.assertTrue(all(0 <= value <= 154 for value in coords[1::2]))
+
+    def test_tape_rack_reuses_real_buttons_and_supports_keyboard_navigation(self):
+        canvas = Mock()
+        canvas.winfo_width.return_value, canvas.winfo_height.return_value = 618, 180
+        canvas.yview.return_value, canvas.canvasy.return_value = (0, 1), 0
+        tk = Mock()
+        tk.Canvas.return_value = canvas
+        tk.Button.side_effect = lambda *args, **kwargs: Mock()
+        deck = app.TapeDeck(Mock(), tk)
+        deck.bind('<<TreeviewSelect>>', Mock())
+        for n, key in enumerate(('one', 'two', 'three')):
+            deck.insert('', 'end', iid=key, text='A long Unicode 🎧 title ' * 5,
+                        values=('Published',), number=n+1)
+        deck.draw()
+        self.assertEqual(tk.Button.call_count, 3)
+        deck.draw()
+        self.assertEqual(tk.Button.call_count, 3)
+        original = deck.buttons['two']
+        deck.sync([{'id': 'two', 'label': 'Updated title', 'status': 'Needs attention', 'number': 2},
+                   {'id': 'one', 'label': 'First tape', 'status': 'Waiting', 'number': 1},
+                   {'id': 'three', 'label': 'Third tape', 'status': 'Published', 'number': 3}])
+        self.assertIs(deck.buttons['two'], original)
+        self.assertEqual(tk.Button.call_count, 3)
+        self.assertEqual(deck.get_children(), ('two', 'one', 'three'))
+        deck.choose('one')
+        self.assertEqual(deck.selection(), ('one',))
+        deck.move('one', -1)
+        self.assertEqual(deck.selection(), ('two',))
+        deck.buttons['two'].focus_set.assert_called_once()
+        self.assertEqual(deck.item('two')['values'], ['Needs attention'])
+        deck.delete('one')
+        self.assertFalse(deck.exists('one'))
+        self.assertEqual(deck.get_children(), ('two', 'three'))
+
+    def test_hatch_acknowledgement_settles_without_touching_publishing(self):
+        window = app.Window.__new__(app.Window)
+        window.hatch_pulse, window.root, window.draw_drop = 0, Mock(), Mock()
+        pending = []
+        window.root.after.side_effect = lambda delay, callback: pending.append(callback)
+        window.acknowledge_drop()
+        self.assertEqual(window.hatch_pulse, 1)
+        self.assertEqual(window.hatch_motion, 1)
+        while pending:
+            pending.pop(0)()
+        self.assertEqual(window.hatch_pulse, 0)
+        self.assertEqual(window.hatch_motion, 0)
+        self.assertEqual(window.draw_drop.call_count, 7)
+
+
 class QueueTests(AppFixture):
     def test_queue_survives_new_interpreter_and_has_no_credential(self):
         job = p.create_job('file', self.audio)
@@ -437,7 +522,7 @@ class UpdateTests(unittest.TestCase):
         self.assertIn('quoted form of (argumentText as text)', script)
 
 
-@unittest.skipUnless(os.environ.get('DISPLAY'), 'GUI checks need a display (or Xvfb)')
+@unittest.skipUnless(os.environ.get('DISPLAY') or sys.platform == 'darwin', 'GUI checks need a display (or Xvfb)')
 class WindowTests(AppFixture):
     def setUp(self):
         super().setUp()
@@ -488,6 +573,18 @@ class WindowTests(AppFixture):
         self.assertIn('No original', self.window.explanation.get())
         self.assertEqual(self.window.table.item(job['id'])['values'], ['Removed'])
         self.assertTrue(self.window.retry.instate(['disabled']))
+
+    def test_radio_layout_and_tape_selection_at_minimum_window_size(self):
+        self.root.geometry('650x680')
+        job = p.create_job('file', self.audio)
+        self.window.refresh()
+        self.root.update()
+        self.window.table.choose(job['id'])
+        self.assertEqual(self.window.selected, job['id'])
+        self.assertIn(self.audio.name, self.window.explanation.get())
+        self.assertGreaterEqual(self.window.table.canvas.winfo_height(), 84)
+        bottom = self.window.privacy_label.winfo_rooty() + self.window.privacy_label.winfo_height()
+        self.assertLessEqual(bottom, self.root.winfo_rooty() + self.root.winfo_height())
 
 
 if __name__ == '__main__':

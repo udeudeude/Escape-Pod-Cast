@@ -4,6 +4,7 @@ import argparse
 import ctypes
 import fcntl
 import json
+import math
 import platform
 from pathlib import Path
 import queue
@@ -18,10 +19,165 @@ import escape_pod_cast as p
 
 HERE = Path(__file__).resolve().parent
 SOURCE_REPO = 'udeudeude/Escape-Pod-Cast'
-APP_VERSION = '0.5.1'
+APP_VERSION = '0.6.0'
 UPDATE_FILES = ('mac/escape_pod_cast.py', 'mac/app.py', 'mac/install.py')
 CREAM, PANEL, INK, ORANGE = '#f7f2e8', '#fffcf6', '#172e3e', '#aa4824'
 AUDIO_TYPES = ('.mp3', '.m4a', '.aac', '.wav', '.flac', '.ogg', '.opus', '.aif', '.aiff', '.mp4')
+
+
+def transmission_position(job=None, updating=False):
+    """A discrete process stage, never an invented completion percentage."""
+    if updating:
+        return 0, 'TUNING', ORANGE
+    if not job or job['state'] == 'cancelled':
+        return 0, 'READY', INK
+    if job['state'] == 'failed':
+        return 0, 'CHECK SIGNAL', '#963d32'
+    if job['state'] == 'done':
+        return (3, 'ON AIR', '#386451') if job['kind'] in ('file', 'youtube') else (0, 'READY', INK)
+    if job['state'] == 'queued':
+        return 0, 'WAITING', ORANGE
+    stage = job.get('stage', '').lower()
+    if any(word in stage for word in ('upload', 'feed', 'episode', 'playback', 'delivery', 'enclosure', 'publishing')):
+        return 2, 'TRANSMITTING', ORANGE
+    return 1, 'PREPARING', ORANGE
+
+
+class TapeDeck:
+    """Scrollable tape labels with real focusable buttons, not painted text controls.
+
+    The small Treeview-compatible surface keeps queue selection/recovery unchanged.
+    Keyboard users can Tab/Return/Space or move with the arrow keys.
+    """
+    def __init__(self, parent, tk):
+        self.tk = tk
+        self.canvas = tk.Canvas(parent, background='#ded5bf', highlightthickness=1,
+                                highlightbackground=INK, height=180, takefocus=0)
+        self.items, self.buttons, self.selected = {}, {}, None
+        self.on_select = None
+        self.canvas.bind('<Configure>', lambda event: self.draw())
+        self.canvas.bind('<MouseWheel>', self.wheel)
+        self.canvas.bind('<Button-4>', lambda event: self.canvas.yview_scroll(-1, 'units'))
+        self.canvas.bind('<Button-5>', lambda event: self.canvas.yview_scroll(1, 'units'))
+
+    def grid(self, **options):
+        self.canvas.grid(**options)
+
+    def bind(self, event, callback):
+        self.on_select = callback
+
+    def configure(self, **options):
+        self.canvas.configure(**options)
+
+    def yview(self, *args):
+        return self.canvas.yview(*args)
+
+    def wheel(self, event):
+        delta = event.delta
+        if delta:
+            step = max(1, abs(delta) // 120) if sys.platform != 'darwin' else min(4, abs(delta))
+            self.canvas.yview_scroll(-step if delta > 0 else step, 'units')
+        return 'break'
+
+    def get_children(self):
+        return tuple(self.items)
+
+    def exists(self, iid):
+        return iid in self.items
+
+    def item(self, iid):
+        return self.items[iid]
+
+    def selection(self):
+        return (self.selected,) if self.selected in self.items else ()
+
+    def delete(self, *ids):
+        for iid in ids:
+            self.items.pop(iid, None)
+            button = self.buttons.pop(iid, None)
+            if button:
+                button.destroy()
+
+    def insert(self, parent, index, iid, text, values, number=1):
+        self.items[iid] = {'text': text, 'values': list(values), 'number': number}
+
+    def sync(self, entries):
+        """Keep focusable buttons and scrolling when queue status changes."""
+        wanted = {entry['id'] for entry in entries}
+        self.delete(*(key for key in self.items if key not in wanted))
+        self.items = {entry['id']: {'text': entry['label'], 'values': [entry['status']],
+                                   'number': entry['number']} for entry in entries}
+        self.draw()
+
+    def selection_set(self, iid):
+        self.selected = iid
+        for key, button in self.buttons.items():
+            button.configure(background='#f3dfb9' if key == iid else PANEL)
+
+    def choose(self, iid):
+        self.selection_set(iid)
+        if self.on_select:
+            self.on_select()
+
+    def move(self, iid, step):
+        keys = list(self.items)
+        index = max(0, min(len(keys)-1, keys.index(iid) + step))
+        target = keys[index]
+        self.buttons[target].focus_set()
+        self.choose(target)
+        height = max(1, self.canvas.winfo_height())
+        top, bottom = index * 94, (index + 1) * 94
+        current = self.canvas.canvasy(0)
+        if top < current or bottom > current + height:
+            self.canvas.yview_moveto(max(0, top-8) / max(1, len(keys)*94+12))
+        return 'break'
+
+    def draw(self):
+        c = self.canvas
+        offset = c.yview()[0]
+        c.delete('all')
+        width = max(400, c.winfo_width())
+        if not self.items:
+            c.create_text(24, 35, text='THE TAPE RACK IS EMPTY', anchor='w', fill=INK,
+                          font=('Courier', 13, 'bold'))
+            c.create_text(24, 62, text='Feed the hatch a track. It will appear here.', anchor='w', fill=INK,
+                          font=('Helvetica', 12))
+        for index, (iid, item) in enumerate(self.items.items()):
+            y = index * 94 + 10
+            c.create_polygon(19, y+4, width-23, y+4, width-11, y+15, width-11, y+77,
+                             width-23, y+87, 19, y+87, 9, y+77, 9, y+15,
+                             fill='#bcb39f', outline='')
+            c.create_polygon(17, y, width-25, y, width-15, y+10, width-15, y+73,
+                             width-25, y+83, 17, y+83, 7, y+73, 7, y+10,
+                             fill=PANEL, outline=INK, width=1)
+            c.create_rectangle(14, y+12, 19, y+71, fill=ORANGE, outline='')
+            c.create_text(30, y+11, text=f"EPC / {item['number']:03d}     PERSONAL TRANSMISSION", anchor='w',
+                          font=('Courier', 9, 'bold'), fill=ORANGE)
+            button = self.buttons.get(iid)
+            if button is None:
+                button = self.tk.Button(c, command=lambda key=iid: self.choose(key),
+                                        anchor='w', justify='left', relief='flat', borderwidth=0,
+                                        foreground=INK, activeforeground=INK, activebackground='#f3dfb9',
+                                        highlightthickness=2, highlightcolor=ORANGE, highlightbackground=PANEL,
+                                        font=('Helvetica', 12, 'bold'), padx=4, takefocus=True)
+                button.bind('<Up>', lambda event, key=iid: self.move(key, -1))
+                button.bind('<Down>', lambda event, key=iid: self.move(key, 1))
+                button.bind('<MouseWheel>', self.wheel)
+                self.buttons[iid] = button
+            # Long filenames remain available in the selectable detail text.
+            title = item['text']
+            limit = max(24, int((width-150)/8))
+            title = title if len(title) <= limit else title[:limit-1] + '…'
+            button.configure(text=title + '\n' + item['values'][0],
+                             background='#f3dfb9' if iid == self.selected else PANEL)
+            c.create_window(28, y+23, window=button, anchor='nw', width=width-148, height=53)
+            for x in (width-98, width-48):
+                c.create_oval(x-14, y+30, x+14, y+58, outline=INK, width=2)
+                c.create_oval(x-4, y+40, x+4, y+48, fill=INK, outline='')
+            c.create_line(width-84, y+44, width-62, y+44, fill=ORANGE, width=2)
+            c.create_text(width-73, y+70, text='SIDE A', fill=INK, font=('Courier', 9))
+        c.configure(scrollregion=(0, 0, width, max(c.winfo_height(), len(self.items)*94+12)), yscrollincrement=24)
+        c.yview_moveto(offset)
 
 
 def drop_inputs(values):
@@ -314,7 +470,7 @@ class Window:
         self.pulsing = False
         self.focus_stamp = 0
         root.title('Escape Pod Cast')
-        root.geometry(f'860x{max(680, min(760, root.winfo_screenheight() - 100))}')
+        root.geometry(f'860x{max(680, min(800, root.winfo_screenheight() - 100))}')
         root.minsize(650, 680)
         root.protocol('WM_DELETE_WINDOW', self.close)
         root.option_add('*Font', 'Helvetica 13')
@@ -327,21 +483,26 @@ class Window:
         style.configure('Primary.TButton', background=ORANGE, foreground='white')
         style.map('Primary.TButton', background=[('active', '#893b20')], foreground=[('disabled', '#ddd6ca')])
         style.configure('TEntry', fieldbackground=PANEL, padding=5)
-        style.configure('Treeview', background=PANEL, fieldbackground=PANEL, foreground=INK, rowheight=30)
-        style.configure('Treeview.Heading', background=INK, foreground=PANEL, padding=7)
-        style.map('Treeview', background=[('selected', '#d8e5e7')], foreground=[('selected', INK)])
         style.configure('Horizontal.TProgressbar', background=ORANGE, troughcolor='#e5ded0')
         root.columnconfigure(0, weight=1)
         root.rowconfigure(0, weight=1)
-        body = ttk.Frame(root, padding=20)
+        body = ttk.Frame(root, padding=16)
         body.grid(sticky='nsew')
         body.columnconfigure(0, weight=1)
         body.rowconfigure(5, weight=1)
-        ttk.Label(body, text='Escape Pod Cast', font=('Helvetica', 26, 'bold')).grid(sticky='w')
-        ttk.Label(body, text='Audio on your Mac → episodes on your iPhone',
-                  font=('Helvetica', 14)).grid(row=1, sticky='w', pady=(4, 12))
+        faceplate = ttk.Frame(body)
+        faceplate.grid(row=0, sticky='ew')
+        ttk.Label(faceplate, text='escape pod cast', font=('Helvetica', 28, 'bold')).pack(side='left')
+        ttk.Label(faceplate, text='PERSONAL RADIO\nMODEL 006 / SIDE A', justify='right',
+                  font=('Courier', 10, 'bold'), foreground=ORANGE).pack(side='right')
+        ttk.Label(body, text='A small machine for sending sound to your pocket.',
+                  font=('Helvetica', 12)).grid(row=1, sticky='w', pady=(0, 8))
         self.drop_hint = 'Drop here — publishing starts automatically'
-        self.drop_zone = tk.Canvas(body, height=96, background=CREAM, highlightthickness=0)
+        self.drop_preview = (None, False)
+        self.hatch_pulse = 0
+        self.hatch_motion = 0
+        self.lamp_tick = False
+        self.drop_zone = tk.Canvas(body, height=154, background=CREAM, highlightthickness=0)
         self.drop_zone.grid(row=2, sticky='ew')
         self.drop_zone.bind('<Configure>', lambda event: self.draw_drop())
         self.drop_bridge = None
@@ -354,10 +515,10 @@ class Window:
         else:
             self.drop_hint = 'Use Add audio or paste a link below'
         links = ttk.Frame(body)
-        links.grid(row=3, sticky='ew', pady=(10, 12))
+        links.grid(row=3, sticky='ew', pady=(6, 8))
         links.columnconfigure(1, weight=1)
         ttk.Button(links, text='Add audio…', command=self.add_audio).grid(row=1, column=0, padx=(0, 12))
-        ttk.Label(links, text='Or paste a YouTube video link').grid(row=0, column=1, sticky='w', pady=(0, 5))
+        ttk.Label(links, text='LINK INPUT / YouTube', font=('Courier', 10, 'bold')).grid(row=0, column=1, sticky='w', pady=(0, 3))
         self.link = tk.StringVar()
         self.link_entry = ttk.Entry(links, textvariable=self.link)
         self.link_entry.grid(row=1, column=1, sticky='ew', padx=(0, 8))
@@ -366,18 +527,14 @@ class Window:
         ttk.Button(links, text='Get audio', style='Primary.TButton', command=self.add_youtube).grid(row=1, column=3)
         heading = ttk.Frame(body)
         heading.grid(row=4, sticky='ew', pady=(0, 6))
-        ttk.Label(heading, text='Recent activity', font=('Helvetica', 14, 'bold')).pack(side='left')
+        ttk.Label(heading, text='THE TAPE RACK', font=('Courier', 12, 'bold')).pack(side='left')
         self.summary = tk.StringVar(value='Ready to add your first episode')
-        ttk.Label(heading, textvariable=self.summary).pack(side='right')
+        ttk.Label(heading, textvariable=self.summary, font=('Helvetica', 11)).pack(side='right')
         table = ttk.Frame(body)
         table.grid(row=5, sticky='nsew')
         table.columnconfigure(0, weight=1)
         table.rowconfigure(0, weight=1)
-        self.table = ttk.Treeview(table, columns=('state',), show='tree headings', selectmode='browse', height=4)
-        self.table.heading('#0', text='Audio / action', anchor='w')
-        self.table.heading('state', text='Status', anchor='w')
-        self.table.column('#0', width=460, minwidth=240)
-        self.table.column('state', width=150, minwidth=110, stretch=False)
+        self.table = TapeDeck(table, tk)
         self.table.grid(sticky='nsew')
         self.table.bind('<<TreeviewSelect>>', self.select_job)
         scrollbar = ttk.Scrollbar(table, orient='vertical', command=self.table.yview)
@@ -390,12 +547,12 @@ class Window:
         self.stage_label = ttk.Label(detail, textvariable=self.stage, font=('Helvetica', 14, 'bold'), wraplength=740)
         self.stage_label.grid(sticky='w')
         self.progress = ttk.Progressbar(detail, mode='indeterminate')
-        self.progress.grid(row=1, sticky='ew', pady=(9, 7))
+        # Kept as the task-state controller; the radio lamp replaces the stock bar.
         self.explanation = tk.StringVar(value='Progress and any retry instructions appear here. Your originals stay on your Mac.')
         explanation_frame = ttk.Frame(detail)
         explanation_frame.grid(row=2, sticky='ew')
         explanation_frame.columnconfigure(0, weight=1)
-        self.explanation_text = tk.Text(explanation_frame, height=4, wrap='word',
+        self.explanation_text = tk.Text(explanation_frame, height=3, wrap='word',
                                         borderwidth=0, highlightthickness=0, state='disabled', background=CREAM, foreground=INK)
         self.explanation_text.grid(row=0, column=0, sticky='ew')
         explanation_scroll = ttk.Scrollbar(explanation_frame, orient='vertical', command=self.explanation_text.yview)
@@ -416,7 +573,7 @@ class Window:
         self.connection_label = ttk.Label(body, textvariable=self.connection_text, wraplength=740)
         self.connection_label.grid(row=8, sticky='w', pady=(8, 0))
         self.privacy_label = ttk.Label(body, text='Unlisted, publicly accessible audio · removed from GitHub after 14 days',
-                                       wraplength=740)
+                                       wraplength=740, font=('Helvetica', 10))
         self.privacy_label.grid(row=9, sticky='w', pady=(4, 0))
         root.bind('<Configure>', self.resize)
         root.bind('<Command-o>', lambda event: self.add_audio())
@@ -425,6 +582,7 @@ class Window:
         self.refresh()
         root.bind('<Destroy>', self.destroy_drop, add='+')
         root.after(75, self.process_drop_messages)
+        root.after(450, self.animate_radio)
 
     def process_drop_messages(self):
         preview, drops = None, []
@@ -438,6 +596,7 @@ class Window:
             elif kind == 'drop':
                 drops.append(value)
         if preview is not None:
+            self.drop_preview = preview
             self.draw_drop(*preview)
         for values in drops:
             if not self.updating:
@@ -450,22 +609,85 @@ class Window:
 
     def draw_drop(self, caption=None, active=False):
         canvas = self.drop_zone
-        width = max(canvas.winfo_width(), 200)
+        if caption is None and not active:
+            caption, active = self.drop_preview
+        width = max(canvas.winfo_width(), 600)
         canvas.delete('all')
-        fill, border = ('#f0dfc9', ORANGE) if active else (PANEL, '#bcb8aa')
-        # Rounded instrument panel, drawn locally rather than using image assets.
-        canvas.create_polygon(18, 3, width-18, 3, width-3, 3, width-3, 18,
-                              width-3, 78, width-3, 93, width-18, 93, 18, 93,
-                              3, 93, 3, 78, 3, 18, 3, 3, smooth=True,
-                              fill=fill, outline=border, width=2)
-        canvas.create_oval(22, 24, 68, 70, outline=ORANGE, width=2)
-        canvas.create_line(45, 34, 45, 58, 37, 50, 45, 58, 53, 50, fill=ORANGE, width=2)
-        canvas.create_text(84, 33, text='Audio tracks or YouTube pages', anchor='w', fill=INK,
-                           font=('Helvetica', 16, 'bold'))
-        canvas.create_text(84, 61, text=caption or self.drop_hint, anchor='w', fill=ORANGE if active else INK,
-                           font=('Helvetica', 12))
+        right = width - 226
+        middle = (right+12)/2
+        fill = '#f1d6a8' if active or self.hatch_pulse else '#e8dfcc'
+        # Enamel hatch: an actual oval opening, orange gasket and inset shadow.
+        canvas.create_oval(8, 11, right, 149, fill='#b5ac98', outline=INK, width=2)
+        canvas.create_oval(8, 5, right, 143, fill=fill, outline=ORANGE if active else INK, width=3)
+        canvas.create_oval(18, 15, right-10, 133, outline=ORANGE, width=1)
+        for x in (35, right-27):
+            canvas.create_oval(x-4, 70, x+4, 78, fill=PANEL, outline=INK)
+            canvas.create_line(x-2, 74, x+2, 74, fill=INK)
+        canvas.create_text(middle, 33, text='01 / AUDIO INTAKE', fill=ORANGE, font=('Courier', 10, 'bold'))
+        canvas.create_text(middle, 65, text='FEED ME AUDIO', fill=INK, font=('Helvetica', 25, 'bold'))
+        canvas.create_text(middle, 93, text='tracks + YouTube video links', fill=INK, font=('Courier', 10))
+        motion = getattr(self, 'hatch_motion', 0)
+        if motion:
+            shutter = motion * (right-60) / 6
+            canvas.create_rectangle(middle-shutter, 48, middle+shutter, 98,
+                                    fill=INK, outline=ORANGE, width=2)
+            if motion == 3:
+                canvas.create_text(middle, 73, text='TRACK RECEIVED', fill=PANEL,
+                                   font=('Courier', 12, 'bold'))
+        note = 'CLICK. TRACK RECEIVED.' if self.hatch_pulse else caption or self.drop_hint
+        # Two short lines fit the narrowest supported window.
+        if note == self.drop_hint and 'Drop here' in note:
+            note = 'DROP HERE / AUTO-PUBLISH'
+        canvas.create_text(middle, 116, text=note, fill=ORANGE if active else INK,
+                           font=('Helvetica', 10, 'bold'))
+        self.draw_dial(canvas, width)
         if self.drop_bridge:
             self.drop_bridge.resize()
+
+    def draw_dial(self, canvas, width):
+        cx, cy = width-110, 81
+        job = next((item for item in self.jobs.values() if item['state'] == 'running'),
+                   self.jobs.get(self.selected))
+        position, label, color = transmission_position(job, self.updating)
+        canvas.create_text(cx, 9, text='02 / TRANSMISSION', fill=ORANGE, font=('Courier', 10, 'bold'))
+        canvas.create_oval(cx-53, cy-53, cx+53, cy+53, fill=INK, outline=INK, width=2)
+        canvas.create_oval(cx-47, cy-47, cx+47, cy+47, fill=PANEL, outline='#b9af99')
+        angles = (150, 110, 70, 30)
+        for index, angle in enumerate(angles):
+            r = math.radians(angle)
+            canvas.create_line(cx+36*math.cos(r), cy-36*math.sin(r),
+                               cx+43*math.cos(r), cy-43*math.sin(r), fill=ORANGE, width=2)
+            canvas.create_text(cx+29*math.cos(r), cy-29*math.sin(r), text=str(index),
+                               fill=INK, font=('Courier', 9))
+        angle = math.radians(angles[position])
+        canvas.create_line(cx, cy, cx+35*math.cos(angle), cy-35*math.sin(angle), fill=ORANGE, width=3)
+        canvas.create_oval(cx-7, cy-7, cx+7, cy+7, fill=INK, outline='')
+        canvas.create_text(cx, cy+26, text=label, fill=color, font=('Courier', 9, 'bold'))
+        working = self.updating or any(item['state'] == 'running' for item in self.jobs.values())
+        lamp = ORANGE if working and self.lamp_tick else '#aaa18c' if working else color
+        canvas.create_oval(width-31, 35, width-19, 47, fill=lamp, outline=INK)
+        canvas.create_text(cx, 145, text='0 READY · 1 PREP · 2 TX · 3 ON AIR',
+                           fill=INK, font=('Courier', 7))
+
+    def animate_radio(self):
+        self.lamp_tick = not self.lamp_tick
+        self.draw_drop()
+        self.root.after(450, self.animate_radio)
+
+    def acknowledge_drop(self):
+        self.hatch_pulse += 1
+        stamp = self.hatch_pulse
+        phases = iter((1, 2, 3, 3, 2, 1, 0))
+        def step():
+            if self.hatch_pulse != stamp:
+                return
+            self.hatch_motion = next(phases)
+            if not self.hatch_motion:
+                self.hatch_pulse = 0
+            self.draw_drop()
+            if self.hatch_motion:
+                self.root.after(80, step)
+        step()
 
     def queue_drop(self, values):
         accepted, rejected = drop_inputs(values)
@@ -479,6 +701,8 @@ class Window:
                 rejected.append(str(exc))
         if jobs:
             self.selected = jobs[-1]['id']
+            if hasattr(self, 'drop_zone'):
+                self.acknowledge_drop()
         if rejected:
             self.show_error(f'{len(jobs)} item(s) added. Some items could not be added:\n' + '\n'.join(dict.fromkeys(rejected)))
         elif not jobs:
@@ -553,11 +777,11 @@ class Window:
         self.retry.configure(state='normal' if state == 'failed' else 'disabled')
         self.remove.configure(state='normal' if state in ('queued', 'failed') else 'disabled')
         if state == 'failed':
-            self.explanation.set(job.get('error', '') + '\n\n' + job.get('help', ''))
+            self.explanation.set(job['label'] + '\n' + job.get('error', '') + '\n\n' + job.get('help', ''))
         elif state in ('done', 'cancelled'):
-            self.explanation.set(job.get('message', 'Published. Refresh your show in Apple Podcasts.'))
+            self.explanation.set(job['label'] + '\n' + job.get('message', 'Published. Refresh your show in Apple Podcasts.'))
         else:
-            self.explanation.set('Keep this Mac awake and connected. You can add more items; they wait their turn. '
+            self.explanation.set(job['label'] + '\nKeep this Mac awake and connected. You can add more items; they wait their turn. '
                                  'Closing this window does not cancel publishing.')
         active = state in ('queued', 'running')
         if active and not self.pulsing:
@@ -736,12 +960,14 @@ class Window:
         visible.sort(key=lambda job: job['created'], reverse=True)
         rows = [(job['id'], job['label'], job['state']) for job in visible]
         if rows != self.last_rows:
-            self.table.delete(*self.table.get_children())
             names = {'queued': 'Waiting', 'running': 'Publishing…', 'failed': 'Needs attention',
                      'done': 'Done', 'cancelled': 'Removed'}
+            numbers = {job['id']: index+1 for index, job in enumerate(jobs)}
+            entries = []
             for job in visible:
                 status = 'Published' if job['state'] == 'done' and job['kind'] in ('file', 'youtube') else names[job['state']]
-                self.table.insert('', 'end', iid=job['id'], text=job['label'], values=(status,))
+                entries.append(dict(job, status=status, number=numbers[job['id']]))
+            self.table.sync(entries)
             self.last_rows = rows
             if self.selected in self.jobs and self.table.exists(self.selected):
                 self.table.selection_set(self.selected)
