@@ -18,7 +18,7 @@ import escape_pod_cast as p
 
 HERE = Path(__file__).resolve().parent
 SOURCE_REPO = 'udeudeude/Escape-Pod-Cast'
-APP_VERSION = '0.5.0'
+APP_VERSION = '0.5.1'
 UPDATE_FILES = ('mac/escape_pod_cast.py', 'mac/app.py', 'mac/install.py')
 CREAM, PANEL, INK, ORANGE = '#f7f2e8', '#fffcf6', '#172e3e', '#aa4824'
 AUDIO_TYPES = ('.mp3', '.m4a', '.aac', '.wav', '.flac', '.ogg', '.opus', '.aif', '.aiff', '.mp4')
@@ -203,8 +203,12 @@ class MacDropZone:
         return []
 
     def event(self, action, sender):
+        # Cocoa calls this outside _tkinter's ENTER_PYTHON/LEAVE_PYTHON pair.
+        # Even root.after_idle() is a Tcl call: it clears _tkinter's saved
+        # thread state and can abort the next timer with NULL tstate.
+        # Only pass ordinary Python data here. The Tk timer consumes it later.
         if action == 'exit':
-            self.window.draw_drop()
+            self.window.drop_messages.put(('preview', (None, False)))
             return
         values = self.values(sender)
         accepted, _ = drop_inputs(values)
@@ -212,11 +216,11 @@ class MacDropZone:
             accepted = []
         if action == 'perform':
             if accepted:
-                # Leave Cocoa's tracking loop before writing jobs or showing dialogs.
-                self.window.root.after_idle(lambda: self.window.queue_drop(values))
-            self.window.draw_drop()
+                self.window.drop_messages.put(('drop', tuple(values)))
+            self.window.drop_messages.put(('preview', (None, False)))
         elif action == 'preview':
-            self.window.draw_drop('Release to publish' if accepted else 'Drop audio tracks or a YouTube video link', bool(accepted))
+            caption = 'Release to publish' if accepted else 'Drop audio tracks or a YouTube video link'
+            self.window.drop_messages.put(('preview', (caption, bool(accepted))))
         return bool(accepted)
 
     def close(self):
@@ -305,6 +309,7 @@ class Window:
         self.root, self.tk, self.ttk, self.dialogs = root, tk, ttk, dialogs
         self.worker, self.worker_id, self.selected, self.updating = None, None, None, False
         self.messages = queue.Queue()
+        self.drop_messages = queue.Queue()
         self.jobs, self.last_rows = {}, None
         self.pulsing = False
         self.focus_stamp = 0
@@ -419,6 +424,25 @@ class Window:
         root.bind('<Control-o>', lambda event: self.add_audio())
         self.refresh()
         root.bind('<Destroy>', self.destroy_drop, add='+')
+        root.after(75, self.process_drop_messages)
+
+    def process_drop_messages(self):
+        preview, drops = None, []
+        while True:
+            try:
+                kind, value = self.drop_messages.get_nowait()
+            except queue.Empty:
+                break
+            if kind == 'preview':
+                preview = value
+            elif kind == 'drop':
+                drops.append(value)
+        if preview is not None:
+            self.draw_drop(*preview)
+        for values in drops:
+            if not self.updating:
+                self.queue_drop(values)
+        self.root.after(75, self.process_drop_messages)
 
     def destroy_drop(self, event):
         if event.widget is self.root and self.drop_bridge:

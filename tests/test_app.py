@@ -2,12 +2,14 @@
 import datetime as dt
 import json
 import os
+import queue
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
+from types import SimpleNamespace
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).parents[1] / 'mac'))
@@ -66,16 +68,38 @@ class DropTests(AppFixture):
 
     def test_native_perform_defers_work_and_copy_preview_does_not_publish(self):
         bridge = app.MacDropZone.__new__(app.MacDropZone)
-        bridge.window = Mock(updating=False)
+        # Deliberately expose no root, widget, draw or queue_drop methods.
+        # Native callbacks must never enter Tcl, even to schedule an idle task.
+        bridge.window = SimpleNamespace(updating=False, drop_messages=queue.Queue())
         bridge.values = Mock(return_value=[str(self.audio)])
         self.assertTrue(bridge.event('preview', None))
-        bridge.window.queue_drop.assert_not_called()
+        self.assertEqual(bridge.window.drop_messages.get_nowait(), ('preview', ('Release to publish', True)))
+        self.assertEqual(p.list_jobs(), [])
         self.assertTrue(bridge.event('perform', None))
-        bridge.window.queue_drop.assert_not_called()
-        bridge.window.root.after_idle.call_args.args[0]()
-        bridge.window.queue_drop.assert_called_once_with([str(self.audio)])
+        self.assertEqual(bridge.window.drop_messages.get_nowait(), ('drop', (str(self.audio),)))
+        self.assertEqual(bridge.window.drop_messages.get_nowait(), ('preview', (None, False)))
+        bridge.event('exit', None)
+        self.assertEqual(bridge.window.drop_messages.get_nowait(), ('preview', (None, False)))
+        self.assertEqual(p.list_jobs(), [])
         bridge.window.updating = True
         self.assertFalse(bridge.event('prepare', None))
+        self.assertFalse(bridge.event('perform', None))
+        self.assertEqual(bridge.window.drop_messages.get_nowait(), ('preview', (None, False)))
+        self.assertTrue(bridge.window.drop_messages.empty())
+
+    def test_tk_timer_consumes_native_messages_and_coalesces_highlights(self):
+        window = app.Window.__new__(app.Window)
+        window.drop_messages = queue.Queue()
+        window.root, window.draw_drop, window.queue_drop = Mock(), Mock(), Mock()
+        window.updating = False
+        window.drop_messages.put(('preview', ('Release to publish', True)))
+        window.drop_messages.put(('drop', (str(self.audio),)))
+        window.drop_messages.put(('preview', (None, False)))
+        window.process_drop_messages()
+        window.draw_drop.assert_called_once_with(None, False)
+        window.queue_drop.assert_called_once_with((str(self.audio),))
+        window.root.after.assert_called_once_with(75, window.process_drop_messages)
+        self.assertTrue(window.drop_messages.empty())
 
     def test_native_geometry_handles_flipped_and_unflipped_content(self):
         bridge = app.MacDropZone.__new__(app.MacDropZone)
