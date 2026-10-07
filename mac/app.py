@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """The Mac's single-window publisher; work continues in separate processes."""
 import argparse
+import ctypes
 import fcntl
 import json
+import platform
 from pathlib import Path
 import queue
 import subprocess
@@ -10,13 +12,219 @@ import sys
 import tempfile
 import threading
 import zipfile
+from urllib.parse import urlsplit, unquote
 
 import escape_pod_cast as p
 
 HERE = Path(__file__).resolve().parent
 SOURCE_REPO = 'udeudeude/Escape-Pod-Cast'
-APP_VERSION = '0.4.0'
+APP_VERSION = '0.5.0'
 UPDATE_FILES = ('mac/escape_pod_cast.py', 'mac/app.py', 'mac/install.py')
+CREAM, PANEL, INK, ORANGE = '#f7f2e8', '#fffcf6', '#172e3e', '#aa4824'
+AUDIO_TYPES = ('.mp3', '.m4a', '.aac', '.wav', '.flac', '.ogg', '.opus', '.aif', '.aiff', '.mp4')
+
+
+def drop_inputs(values):
+    """Validate a drag without publishing, preserving spaces and Unicode in paths."""
+    accepted, rejected = [], []
+    for value in values:
+        value = str(value).strip()
+        try:
+            parsed = urlsplit(value)
+            if parsed.scheme == 'file':
+                if parsed.netloc not in ('', 'localhost'):
+                    raise ValueError('Only local files can be dropped.')
+                value = unquote(parsed.path)
+            path = Path(value)
+            if path.is_file():
+                if path.suffix.lower() in p.LINK_TYPES:
+                    item = ('youtube', p.link_file(path))
+                elif path.suffix.lower() in AUDIO_TYPES:
+                    item = ('file', str(path.resolve()))
+                else:
+                    raise ValueError('This is not a supported audio track or saved YouTube link.')
+            else:
+                item = ('youtube', p.youtube_url(value)[0])
+            if item not in accepted:
+                accepted.append(item)
+        except (p.Failure, OSError, ValueError) as exc:
+            rejected.append(str(exc))
+    return accepted, rejected
+
+
+class _Point(ctypes.Structure):
+    _fields_ = [('x', ctypes.c_double), ('y', ctypes.c_double)]
+
+
+class _Size(ctypes.Structure):
+    _fields_ = [('width', ctypes.c_double), ('height', ctypes.c_double)]
+
+
+class _Rect(ctypes.Structure):
+    _fields_ = [('origin', _Point), ('size', _Size)]
+
+
+class MacDropZone:
+    """A transparent Cocoa dragging destination over the Tk drop panel.
+
+    Uses only macOS frameworks; callbacks stay alive as long as their ObjC class.
+    No clipboard polling, browser access, third-party Tk binaries, or permissions.
+    """
+    instances, callbacks = {}, []
+
+    def __init__(self, window):
+        self.window, self.view = window, None
+        ctypes.CDLL('/System/Library/Frameworks/AppKit.framework/AppKit')
+        self.objc = ctypes.CDLL('/usr/lib/libobjc.A.dylib')
+        for name, args, result in (
+            ('objc_getClass', [ctypes.c_char_p], ctypes.c_void_p),
+            ('sel_registerName', [ctypes.c_char_p], ctypes.c_void_p),
+            ('objc_allocateClassPair', [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t], ctypes.c_void_p),
+            ('class_addMethod', [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p], ctypes.c_bool),
+            ('objc_registerClassPair', [ctypes.c_void_p], None)):
+            fn = getattr(self.objc, name)
+            fn.argtypes, fn.restype = args, result
+        cls = self.objc.objc_getClass(b'EPCPodcastDropView')
+        if not cls:
+            cls = self.objc.objc_allocateClassPair(self.objc.objc_getClass(b'NSView'), b'EPCPodcastDropView', 0)
+            bool_encoding = b'c@:@' if platform.machine() == 'x86_64' else b'B@:@'
+            for name, result, encoding, action in (
+                ('draggingEntered:', ctypes.c_ulong, b'Q@:@', 'preview'),
+                ('draggingUpdated:', ctypes.c_ulong, b'Q@:@', 'preview'),
+                ('draggingExited:', None, b'v@:@', 'exit'),
+                ('prepareForDragOperation:', ctypes.c_bool, bool_encoding, 'prepare'),
+                ('performDragOperation:', ctypes.c_bool, bool_encoding, 'perform'),
+                ('concludeDragOperation:', None, b'v@:@', 'exit')):
+                def callback(receiver, selector, sender, action=action):
+                    instance = MacDropZone.instances.get(receiver)
+                    if not instance:
+                        return False
+                    try:
+                        return instance.event(action, sender)
+                    except Exception as exc:
+                        print('Window drop failed:', exc, flush=True)
+                        return False
+                fn = ctypes.CFUNCTYPE(result, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)(callback)
+                self.callbacks.append(fn)
+                self.objc.class_addMethod(cls, self.sel(name), ctypes.cast(fn, ctypes.c_void_p), encoding)
+            self.objc.objc_registerClassPair(cls)
+        self.cls = cls
+        self.attach_attempts = 0
+        window.root.after_idle(self.attach)
+
+    def sel(self, name):
+        return self.objc.sel_registerName(name.encode())
+
+    def send(self, obj, name, *args, result=ctypes.c_void_p, types=()):
+        fn = ctypes.CFUNCTYPE(result, ctypes.c_void_p, ctypes.c_void_p, *types)(
+            ctypes.cast(self.objc.objc_msgSend, ctypes.c_void_p).value)
+        return fn(obj, self.sel(name), *args)
+
+    def string(self, value):
+        return self.send(self.objc.objc_getClass(b'NSString'), 'stringWithUTF8String:', value.encode(),
+                         types=(ctypes.c_char_p,))
+
+    def text(self, value):
+        raw = self.send(value, 'UTF8String', result=ctypes.c_char_p)
+        return raw.decode('utf-8') if raw else ''
+
+    def array(self, values):
+        array = self.send(self.objc.objc_getClass(b'NSMutableArray'), 'array')
+        for value in values:
+            self.send(array, 'addObject:', value, result=None, types=(ctypes.c_void_p,))
+        return array
+
+    def bounds(self, view):
+        # Intel's 32-byte structure return uses objc_msgSend_stret; arm64 does not.
+        if platform.machine() == 'x86_64':
+            rect = _Rect()
+            fn = ctypes.CFUNCTYPE(None, ctypes.POINTER(_Rect), ctypes.c_void_p, ctypes.c_void_p)(
+                ctypes.cast(self.objc.objc_msgSend_stret, ctypes.c_void_p).value)
+            fn(ctypes.byref(rect), view, self.sel('bounds'))
+            return rect
+        return self.send(view, 'bounds', result=_Rect)
+
+    def attach(self):
+        if not self.window.root.winfo_exists():
+            return
+        app = self.send(self.objc.objc_getClass(b'NSApplication'), 'sharedApplication')
+        windows = self.send(app, 'windows')
+        count = self.send(windows, 'count', result=ctypes.c_ulong)
+        for index in range(count):
+            native = self.send(windows, 'objectAtIndex:', index, types=(ctypes.c_ulong,))
+            if self.text(self.send(native, 'title')) == 'Escape Pod Cast':
+                self.parent = self.send(native, 'contentView')
+                self.view = self.send(self.send(self.cls, 'alloc'), 'initWithFrame:', _Rect(), types=(_Rect,))
+                self.instances[self.view] = self
+                kinds = ['public.file-url', 'public.url', 'public.utf8-plain-text',
+                         'NSURLPboardType', 'NSFilenamesPboardType', 'NSStringPboardType']
+                self.send(self.view, 'registerForDraggedTypes:', self.array(map(self.string, kinds)),
+                          result=None, types=(ctypes.c_void_p,))
+                self.send(self.parent, 'addSubview:', self.view, result=None, types=(ctypes.c_void_p,))
+                self.resize()
+                return
+        self.attach_attempts += 1
+        if self.attach_attempts < 10:
+            self.window.root.after(200, self.attach)
+        else:
+            self.window.drop_hint = 'Use Add audio or paste a link below'
+            self.window.draw_drop()
+
+    def resize(self):
+        if not self.view:
+            return
+        zone, root = self.window.drop_zone, self.window.root
+        bounds = self.bounds(self.parent)
+        x, y = zone.winfo_rootx() - root.winfo_rootx(), zone.winfo_rooty() - root.winfo_rooty()
+        width, height = zone.winfo_width(), zone.winfo_height()
+        if not self.send(self.parent, 'isFlipped', result=ctypes.c_bool):
+            y = bounds.size.height - y - height
+        rect = _Rect(_Point(bounds.origin.x + x, bounds.origin.y + y), _Size(width, height))
+        self.send(self.view, 'setFrame:', rect, result=None, types=(_Rect,))
+
+    def values(self, sender):
+        board = self.send(sender, 'draggingPasteboard')
+        urls = self.send(board, 'readObjectsForClasses:options:',
+                         self.array([self.objc.objc_getClass(b'NSURL')]), None,
+                         types=(ctypes.c_void_p, ctypes.c_void_p))
+        count = self.send(urls, 'count', result=ctypes.c_ulong) if urls else 0
+        if count:
+            return [self.text(self.send(self.send(urls, 'objectAtIndex:', i, types=(ctypes.c_ulong,)),
+                                        'absoluteString')) for i in range(count)]
+        paths = self.send(board, 'propertyListForType:', self.string('NSFilenamesPboardType'), types=(ctypes.c_void_p,))
+        if paths:
+            count = self.send(paths, 'count', result=ctypes.c_ulong)
+            return [self.text(self.send(paths, 'objectAtIndex:', i, types=(ctypes.c_ulong,))) for i in range(count)]
+        for kind in ('public.url', 'public.utf8-plain-text', 'NSStringPboardType'):
+            value = self.send(board, 'stringForType:', self.string(kind), types=(ctypes.c_void_p,))
+            if value:
+                lines = self.text(value).splitlines()
+                return [line for line in lines if line.startswith(('https://', 'http://', 'file://'))]
+        return []
+
+    def event(self, action, sender):
+        if action == 'exit':
+            self.window.draw_drop()
+            return
+        values = self.values(sender)
+        accepted, _ = drop_inputs(values)
+        if self.window.updating:
+            accepted = []
+        if action == 'perform':
+            if accepted:
+                # Leave Cocoa's tracking loop before writing jobs or showing dialogs.
+                self.window.root.after_idle(lambda: self.window.queue_drop(values))
+            self.window.draw_drop()
+        elif action == 'preview':
+            self.window.draw_drop('Release to publish' if accepted else 'Drop audio tracks or a YouTube video link', bool(accepted))
+        return bool(accepted)
+
+    def close(self):
+        if self.view:
+            self.instances.pop(self.view, None)
+            self.send(self.view, 'removeFromSuperview', result=None)
+            self.send(self.view, 'release', result=None)
+            self.view = None
 
 
 def submit_inputs(files=(), youtube=None, tools=False):
@@ -101,10 +309,23 @@ class Window:
         self.pulsing = False
         self.focus_stamp = 0
         root.title('Escape Pod Cast')
-        root.geometry('820x700')
-        root.minsize(650, 620)
+        root.geometry(f'860x{max(680, min(760, root.winfo_screenheight() - 100))}')
+        root.minsize(650, 680)
         root.protocol('WM_DELETE_WINDOW', self.close)
         root.option_add('*Font', 'Helvetica 13')
+        root.configure(background=CREAM)
+        style = ttk.Style(root)
+        style.theme_use('clam')
+        style.configure('.', background=CREAM, foreground=INK)
+        style.configure('TButton', padding=(12, 7), background=PANEL)
+        style.map('TButton', background=[('active', '#e9e1d3')])
+        style.configure('Primary.TButton', background=ORANGE, foreground='white')
+        style.map('Primary.TButton', background=[('active', '#893b20')], foreground=[('disabled', '#ddd6ca')])
+        style.configure('TEntry', fieldbackground=PANEL, padding=5)
+        style.configure('Treeview', background=PANEL, fieldbackground=PANEL, foreground=INK, rowheight=30)
+        style.configure('Treeview.Heading', background=INK, foreground=PANEL, padding=7)
+        style.map('Treeview', background=[('selected', '#d8e5e7')], foreground=[('selected', INK)])
+        style.configure('Horizontal.TProgressbar', background=ORANGE, troughcolor='#e5ded0')
         root.columnconfigure(0, weight=1)
         root.rowconfigure(0, weight=1)
         body = ttk.Frame(root, padding=20)
@@ -114,20 +335,30 @@ class Window:
         ttk.Label(body, text='Escape Pod Cast', font=('Helvetica', 26, 'bold')).grid(sticky='w')
         ttk.Label(body, text='Audio on your Mac → episodes on your iPhone',
                   font=('Helvetica', 14)).grid(row=1, sticky='w', pady=(4, 12))
-        actions = ttk.Frame(body)
-        actions.grid(row=2, sticky='ew')
-        ttk.Button(actions, text='Add audio…', command=self.add_audio).pack(side='left', padx=(0, 12))
-        ttk.Label(actions, text='You can also drop audio or saved links onto the app icon.').pack(side='left')
+        self.drop_hint = 'Drop here — publishing starts automatically'
+        self.drop_zone = tk.Canvas(body, height=96, background=CREAM, highlightthickness=0)
+        self.drop_zone.grid(row=2, sticky='ew')
+        self.drop_zone.bind('<Configure>', lambda event: self.draw_drop())
+        self.drop_bridge = None
+        if sys.platform == 'darwin':
+            try:
+                self.drop_bridge = MacDropZone(self)
+            except (OSError, AttributeError) as exc:
+                print('Window drop support unavailable:', exc, flush=True)
+                self.drop_hint = 'Use Add audio or paste a link below'
+        else:
+            self.drop_hint = 'Use Add audio or paste a link below'
         links = ttk.Frame(body)
         links.grid(row=3, sticky='ew', pady=(10, 12))
-        links.columnconfigure(0, weight=1)
-        ttk.Label(links, text='YouTube video link').grid(row=0, column=0, sticky='w', pady=(0, 5))
+        links.columnconfigure(1, weight=1)
+        ttk.Button(links, text='Add audio…', command=self.add_audio).grid(row=1, column=0, padx=(0, 12))
+        ttk.Label(links, text='Or paste a YouTube video link').grid(row=0, column=1, sticky='w', pady=(0, 5))
         self.link = tk.StringVar()
         self.link_entry = ttk.Entry(links, textvariable=self.link)
-        self.link_entry.grid(row=1, column=0, sticky='ew', padx=(0, 8))
+        self.link_entry.grid(row=1, column=1, sticky='ew', padx=(0, 8))
         self.link_entry.bind('<Return>', lambda event: self.add_youtube())
-        ttk.Button(links, text='Paste', command=self.paste_link).grid(row=1, column=1, padx=(0, 8))
-        ttk.Button(links, text='Get audio', command=self.add_youtube).grid(row=1, column=2)
+        ttk.Button(links, text='Paste', command=self.paste_link).grid(row=1, column=2, padx=(0, 8))
+        ttk.Button(links, text='Get audio', style='Primary.TButton', command=self.add_youtube).grid(row=1, column=3)
         heading = ttk.Frame(body)
         heading.grid(row=4, sticky='ew', pady=(0, 6))
         ttk.Label(heading, text='Recent activity', font=('Helvetica', 14, 'bold')).pack(side='left')
@@ -137,7 +368,7 @@ class Window:
         table.grid(row=5, sticky='nsew')
         table.columnconfigure(0, weight=1)
         table.rowconfigure(0, weight=1)
-        self.table = ttk.Treeview(table, columns=('state',), show='tree headings', selectmode='browse', height=7)
+        self.table = ttk.Treeview(table, columns=('state',), show='tree headings', selectmode='browse', height=4)
         self.table.heading('#0', text='Audio / action', anchor='w')
         self.table.heading('state', text='Status', anchor='w')
         self.table.column('#0', width=460, minwidth=240)
@@ -160,7 +391,7 @@ class Window:
         explanation_frame.grid(row=2, sticky='ew')
         explanation_frame.columnconfigure(0, weight=1)
         self.explanation_text = tk.Text(explanation_frame, height=4, wrap='word',
-                                        borderwidth=0, highlightthickness=0, state='disabled')
+                                        borderwidth=0, highlightthickness=0, state='disabled', background=CREAM, foreground=INK)
         self.explanation_text.grid(row=0, column=0, sticky='ew')
         explanation_scroll = ttk.Scrollbar(explanation_frame, orient='vertical', command=self.explanation_text.yview)
         explanation_scroll.grid(row=0, column=1, sticky='ns')
@@ -187,6 +418,48 @@ class Window:
         root.bind('<Command-q>', lambda event: self.close())
         root.bind('<Control-o>', lambda event: self.add_audio())
         self.refresh()
+        root.bind('<Destroy>', self.destroy_drop, add='+')
+
+    def destroy_drop(self, event):
+        if event.widget is self.root and self.drop_bridge:
+            self.drop_bridge.close()
+
+    def draw_drop(self, caption=None, active=False):
+        canvas = self.drop_zone
+        width = max(canvas.winfo_width(), 200)
+        canvas.delete('all')
+        fill, border = ('#f0dfc9', ORANGE) if active else (PANEL, '#bcb8aa')
+        # Rounded instrument panel, drawn locally rather than using image assets.
+        canvas.create_polygon(18, 3, width-18, 3, width-3, 3, width-3, 18,
+                              width-3, 78, width-3, 93, width-18, 93, 18, 93,
+                              3, 93, 3, 78, 3, 18, 3, 3, smooth=True,
+                              fill=fill, outline=border, width=2)
+        canvas.create_oval(22, 24, 68, 70, outline=ORANGE, width=2)
+        canvas.create_line(45, 34, 45, 58, 37, 50, 45, 58, 53, 50, fill=ORANGE, width=2)
+        canvas.create_text(84, 33, text='Audio tracks or YouTube pages', anchor='w', fill=INK,
+                           font=('Helvetica', 16, 'bold'))
+        canvas.create_text(84, 61, text=caption or self.drop_hint, anchor='w', fill=ORANGE if active else INK,
+                           font=('Helvetica', 12))
+        if self.drop_bridge:
+            self.drop_bridge.resize()
+
+    def queue_drop(self, values):
+        accepted, rejected = drop_inputs(values)
+        jobs = []
+        active = {(job['kind'], job['source']): job for job in p.list_jobs()
+                  if job['state'] in ('queued', 'running')}
+        for kind, source in accepted:
+            try:
+                jobs.append(active.get((kind, source)) or p.create_job(kind, source))
+            except (p.Failure, OSError, ValueError) as exc:
+                rejected.append(str(exc))
+        if jobs:
+            self.selected = jobs[-1]['id']
+        if rejected:
+            self.show_error(f'{len(jobs)} item(s) added. Some items could not be added:\n' + '\n'.join(dict.fromkeys(rejected)))
+        elif not jobs:
+            self.show_error('Drop an audio file or a link to an individual YouTube video.')
+        return bool(jobs)
 
     def resize(self, event):
         if event.widget is self.root:

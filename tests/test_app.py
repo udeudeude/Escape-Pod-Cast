@@ -30,6 +30,70 @@ class AppFixture(unittest.TestCase):
         self.audio.write_bytes(b'original')
 
 
+class DropTests(AppFixture):
+    def test_multiple_files_uri_unicode_and_duplicates(self):
+        second = self.home / '🎧 {Hound} + Heaven.m4a'
+        second.write_bytes(b'audio')
+        accepted, rejected = app.drop_inputs([self.audio.as_uri(), second.as_uri(), str(second)])
+        self.assertEqual(accepted, [('file', str(self.audio)), ('file', str(second))])
+        self.assertEqual(rejected, [])
+
+    def test_video_links_normalize_and_mixed_bad_inputs_do_not_discard_audio(self):
+        accepted, rejected = app.drop_inputs([str(self.audio), 'https://youtu.be/BaW_jenozKc?si=tracking',
+                                            'https://example.com', str(self.home), 'file://remote/audio.mp3'])
+        self.assertEqual(len(accepted), 2)
+        self.assertEqual(accepted[1], ('youtube', 'https://www.youtube.com/watch?v=BaW_jenozKc'))
+        self.assertEqual(len(rejected), 3)
+        self.assertEqual(p.list_jobs(), [])  # Drag preview never writes jobs.
+
+    def test_saved_link_and_unsupported_file(self):
+        link = self.home / 'video.url'
+        link.write_text('[InternetShortcut]\nURL=https://youtu.be/BaW_jenozKc\n')
+        other = self.home / 'document.pdf'
+        other.write_bytes(b'not audio')
+        accepted, rejected = app.drop_inputs([str(link), str(other)])
+        self.assertEqual(accepted, [('youtube', 'https://www.youtube.com/watch?v=BaW_jenozKc')])
+        self.assertEqual(len(rejected), 1)
+
+    def test_repeated_drop_reuses_waiting_job_and_reports_partial_failure(self):
+        window = app.Window.__new__(app.Window)
+        window.show_error = Mock()
+        self.assertTrue(window.queue_drop([str(self.audio), 'https://example.com']))
+        self.assertTrue(window.queue_drop([self.audio.as_uri()]))
+        self.assertEqual(len(p.list_jobs()), 1)
+        self.assertEqual(window.selected, p.list_jobs()[0]['id'])
+        window.show_error.assert_called_once()
+
+    def test_native_perform_defers_work_and_copy_preview_does_not_publish(self):
+        bridge = app.MacDropZone.__new__(app.MacDropZone)
+        bridge.window = Mock(updating=False)
+        bridge.values = Mock(return_value=[str(self.audio)])
+        self.assertTrue(bridge.event('preview', None))
+        bridge.window.queue_drop.assert_not_called()
+        self.assertTrue(bridge.event('perform', None))
+        bridge.window.queue_drop.assert_not_called()
+        bridge.window.root.after_idle.call_args.args[0]()
+        bridge.window.queue_drop.assert_called_once_with([str(self.audio)])
+        bridge.window.updating = True
+        self.assertFalse(bridge.event('prepare', None))
+
+    def test_native_geometry_handles_flipped_and_unflipped_content(self):
+        bridge = app.MacDropZone.__new__(app.MacDropZone)
+        bridge.view, bridge.parent = 1, 2
+        root, zone = Mock(), Mock()
+        root.winfo_rootx.return_value, root.winfo_rooty.return_value = 100, 200
+        zone.winfo_rootx.return_value, zone.winfo_rooty.return_value = 120, 280
+        zone.winfo_width.return_value, zone.winfo_height.return_value = 600, 96
+        bridge.window = Mock(root=root, drop_zone=zone)
+        bridge.bounds = Mock(return_value=app._Rect(app._Point(0, 0), app._Size(860, 760)))
+        for flipped, expected_y in ((False, 584), (True, 80)):
+            bridge.send = Mock(return_value=flipped)
+            bridge.resize()
+            rect = bridge.send.call_args.args[2]
+            self.assertEqual((rect.origin.x, rect.origin.y, rect.size.width, rect.size.height),
+                             (20, expected_y, 600, 96))
+
+
 class QueueTests(AppFixture):
     def test_queue_survives_new_interpreter_and_has_no_credential(self):
         job = p.create_job('file', self.audio)

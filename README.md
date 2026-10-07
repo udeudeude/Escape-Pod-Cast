@@ -8,7 +8,7 @@ Your Mac prepares the audio and updates a static feed. Your existing GitHub acco
 
 ## Everyday use
 
-1. Open **Escape Pod Cast.app** and click **Add audio…**, or drop files onto its Dock/Finder icon.
+1. Open **Escape Pod Cast.app** and drop audio tracks or a YouTube video link onto the large panel inside the window. Publishing starts automatically. **Add audio…**, the paste field, and Dock/Finder icon drops are also available.
 2. Watch the current stage and activity list in the app. Add more items whenever you like; they wait their turn.
 3. When an item says **Published**, refresh your show in Apple Podcasts. Enable automatic downloads on the iPhone.
 
@@ -22,7 +22,9 @@ The optional **Open drop folder** action in Settings opens **Drop Audio Here**. 
 
 Open the app, paste one video URL into **YouTube video link** (or click **Paste**), and click **Get audio**. The first import offers to download two free helpers, **yt-dlp** and **Node 22**, into the app's own folder. No extra account, payment, Homebrew, administrator access, or Terminal typing is needed. Downloads total about 90 MB; allow 400 MB of free disk space and a few minutes on a slow connection. Ordinary audio publishing does not need these helpers.
 
-You can also drop a saved YouTube `.webloc` or `.url` shortcut, or a `.txt` file containing just one video URL, onto the app icon or into **Drop Audio Here**. Enable the helpers from Settings before using the watched folder. Browser URL drags vary between browsers and macOS versions; if a direct drag is ignored, save/drop a link file or use the URL field. Dropping onto the window itself is not supported; use the app icon. Playlists are not imported; a video link containing a playlist parameter imports only that video.
+Drag a video's address or a linked YouTube page from your browser onto the window's drop panel (not the video player). You can also drop a saved `.webloc` or `.url` shortcut, or a `.txt` file containing just one video URL. Multiple audio tracks can be dropped together; originals stay untouched. Unsupported items are reported while accepted items queue. Repeated drops reuse matching waiting/running jobs. Window dropping uses built-in macOS frameworks without an extra package. Browser drag payloads vary; if a browser supplies no usable URL, use **Paste** or a saved link. Enable the YouTube helpers from Settings before using the watched folder. Playlists are not imported; a video link containing a playlist parameter imports only that video.
+
+The window uses a warm ivory, deep navy, and burnt-orange listening-capsule design, with a restrained instrument-panel drop zone and readable activity/status controls. The native window drop bridge targets both supported Macs, but live Finder/browser drags still require Mac verification.
 
 Episodes use the video's title. Different links to the same video deduplicate while its audio is online, and a retry after a failed feed update reuses the completed upload. Temporary downloaded audio is removed afterward. The same 14-day expiry applies. **Settings → Set up / update YouTube…** refreshes the helpers when YouTube changes; failed downloads or compatibility checks leave the previous working helpers active. Already-current helpers are not downloaded again. Successful updates keep one previous working helper bundle and remove older complete helper folders.
 
