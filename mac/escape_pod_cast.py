@@ -34,6 +34,8 @@ NS = 'http://www.itunes.com/dtds/podcast-1.0.dtd'
 ET.register_namespace('itunes', NS)
 RETENTION = dt.timedelta(days=14)
 MEDIA_NAME = re.compile(r'^epc-[0-9a-f]{64}\.(mp3|m4a)$')
+AUDIO_TYPES = ('.mp3', '.m4a', '.aac', '.wav', '.flac', '.ogg', '.opus', '.aif', '.aiff', '.mp4')
+RETRY_DELAYS = (30, 120, 300)
 FEED_SETTINGS = 'escape-pod-cast.json'
 LEGACY_FEED = 'docs/feed.xml'
 FEED_PATH = re.compile(r'^docs/feeds/[0-9a-f]{48}/feed\.xml$')
@@ -53,6 +55,212 @@ class Failure(RuntimeError):
 
 class NetworkFailure(Failure):
     pass
+
+
+def queue_paused():
+    return (HOME / 'queue-paused').exists()
+
+
+def pause_queue(paused):
+    HOME.mkdir(parents=True, exist_ok=True)
+    if paused:
+        (HOME / 'queue-paused').touch()
+    else:
+        (HOME / 'queue-paused').unlink(missing_ok=True)
+
+
+def ready_job(job, now=None):
+    now = now or dt.datetime.now(dt.timezone.utc)
+    return (job['state'] == 'queued' and not queue_paused() and
+            (not job.get('next_attempt') or stamp(job['next_attempt']) <= now))
+
+
+def episode_status(job, now=None):
+    now = now or dt.datetime.now(dt.timezone.utc)
+    state, publication = job['state'], job.get('publication')
+    if state == 'queued':
+        if queue_paused():
+            return 'Paused'
+        if job.get('next_attempt'):
+            seconds = max(0, int((stamp(job['next_attempt']) - now).total_seconds()))
+            return 'Retry in %s:%02d' % divmod(seconds, 60)
+        return 'Waiting'
+    if state != 'done':
+        return {'running': 'Publishing…', 'failed': 'Needs attention', 'cancelled': 'Removed'}[state]
+    if publication in ('expired', 'removed', 'removal_pending'):
+        return {'expired': 'Expired', 'removed': 'Removed from podcast', 'removal_pending': 'Removal pending'}[publication]
+    if job.get('expires_at') and stamp(job['expires_at']) <= now:
+        return 'Expiry due'
+    if publication == 'feed_pending':
+        return 'Feed updating'
+    if publication == 'available':
+        hours = max(1, int((stamp(job['expires_at']) - now).total_seconds() / 3600)) if job.get('expires_at') else None
+        remaining = ('%sd' % (hours//24)) if hours and hours >= 24 else '%sh' % hours if hours else ''
+        return 'Available' + (' · expires in ' + remaining if remaining else '')
+    return 'Published · unverified' if job['kind'] in ('file', 'youtube') else 'Done'
+
+
+def transient_error(exc):
+    if isinstance(exc, NetworkFailure):
+        return not any(word in str(exc).lower() for word in ('certificate', 'proxy', 'byte range'))
+    return isinstance(exc, (TimeoutError, ConnectionError, urllib.error.URLError))
+
+
+def redact(value):
+    value = re.sub(r'\b(?:github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]+)\b', '<TOKEN REDACTED>', str(value))
+    value = re.sub(r'(?i)(authorization["\s:=]+(?:bearer\s+)?)[^\s,\"\}]+', r'\1<REDACTED>', value)
+    value = re.sub(r'/feeds/[0-9a-f]{48}/', '/feeds/<ADDRESS REDACTED>/', value)
+    return value.replace(str(HOME), '<APP DATA>').replace(str(Path.home()), '<HOME>')
+
+
+def diagnostic_report():
+    report = {'python': platform.python_version(), 'macOS': platform.mac_ver()[0],
+              'machine': platform.machine(), 'queue_paused': queue_paused(),
+              'connected': CONFIG.exists(), 'jobs': []}
+    for job in list_jobs():
+        report['jobs'].append({key: redact(job.get(key, '')) for key in
+                              ('kind', 'state', 'stage', 'attempts', 'auto_retries', 'next_attempt', 'publication', 'error')})
+    log = HOME / 'Status.log'
+    if log.exists():
+        with log.open('rb') as stream:
+            stream.seek(max(0, log.stat().st_size - 50000))
+            report['log_tail'] = redact(stream.read().decode('utf-8', errors='replace'))
+    return report
+
+
+def audio_command(args, timeout=900):
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise Failure('The audio tool timed out. Your original is kept; retry or try a compatible audio copy.') from None
+
+
+def fail_job(job, exc):
+    count = job.get('auto_retries', 0)
+    if transient_error(exc) and count < len(RETRY_DELAYS):
+        delay = RETRY_DELAYS[count]
+        job.update(state='queued', stage='Connection interrupted — retry scheduled', pid=None,
+                   error=str(exc), help='The app will retry automatically. Pause queue to postpone it.',
+                   auto_retries=count+1, next_attempt=(dt.datetime.now(dt.timezone.utc) +
+                                                     dt.timedelta(seconds=delay)).isoformat())
+    else:
+        job.update(state='failed', stage='Needs attention', pid=None,
+                   error=str(exc), help=recovery_hint(str(exc)), next_attempt=None)
+
+
+def remember_episode(asset, now):
+    job_progress('Waiting for the public feed', publication='feed_pending',
+                 asset_id=asset['id'], guid='escape-pod-cast:asset-' + str(asset['id']),
+                 enclosure=asset['browser_download_url'], published_at=now.isoformat(),
+                 expires_at=(stamp(asset['created_at']) + RETENTION).isoformat())
+
+
+def mark_asset_removed(asset_id, reason):
+    for job in list_jobs():
+        if job.get('asset_id') == asset_id and job['state'] == 'done':
+            with job_lock(job['id'], blocking=False) as acquired:
+                if acquired:
+                    job = load_job(job['id'])
+                    job.update(publication=reason, stage='Expired' if reason == 'expired' else 'Removed from podcast')
+                    save_job(job)
+
+
+def confirm_publications():
+    """One bounded public RSS check; it does not claim an iPhone downloaded it."""
+    pending = [job for job in list_jobs() if job['state'] == 'done' and job.get('publication') == 'feed_pending']
+    if not pending or not CONFIG.exists():
+        return
+    config = json.loads(CONFIG.read_text())
+    if not isinstance(config.get('feed_url'), str) or not config['feed_url'].startswith('https://'):
+        return
+    try:
+        if sys.platform == 'darwin':
+            status, data, _ = mac_transfer(config['feed_url'], follow=True, max_time=20, max_size=4*1024**2)
+            if status != 200:
+                return
+        else:
+            with urllib.request.urlopen(config['feed_url'], timeout=20) as response:
+                data = response.read(4*1024**2 + 1)
+            if len(data) > 4*1024**2:
+                return
+        root = ET.fromstring(data)
+        items = {item.findtext('guid'): item for item in channel(root).findall('item')}
+    except (Failure, OSError, ValueError, ET.ParseError):
+        return  # A failed verification leaves honest Feed updating status.
+    for job in pending:
+        item = items.get(job.get('guid'))
+        enclosure = item.find('enclosure') if item is not None else None
+        if enclosure is not None and enclosure.get('url') == job.get('enclosure'):
+            with job_lock(job['id'], blocking=False) as acquired:
+                if acquired:
+                    current = load_job(job['id'])
+                    if current.get('publication') == 'feed_pending' and current['state'] == 'done':
+                        current.update(publication='available', stage='Available in the public feed',
+                                       verified_at=dt.datetime.now(dt.timezone.utc).isoformat(),
+                                       message='Available to podcast apps. Apple controls when your iPhone refreshes and downloads it.')
+                        save_job(current)
+
+
+def edit_job(job_id, title, description):
+    with job_lock(job_id, blocking=False) as acquired:
+        if not acquired:
+            raise Failure('This episode is publishing. Edit waiting or failed items.')
+        job = load_job(job_id)
+        if job['state'] not in ('queued', 'failed') or job['kind'] not in ('file', 'youtube'):
+            raise Failure('Edit an audio item while it is waiting or failed.')
+        title, description = title.strip(), description.strip()
+        if not title or len(title) > 1000 or len(description) > 10000:
+            raise Failure('Use a title of 1–1000 characters and a description of at most 10,000 characters.')
+        for value in (title, description):
+            if any(ord(c) < 32 and c not in '\n\r\t' or 0xd800 <= ord(c) <= 0xdfff for c in value):
+                raise Failure('The episode text contains an unsupported control character.')
+        job.update(title=title, label=title, description=description)
+        save_job(job)
+
+
+def move_job(job_id, direction):
+    with intake_lock():
+        waiting = [job for job in list_jobs() if job['state'] == 'queued']
+        keys = [job['id'] for job in waiting]
+        if job_id not in keys:
+            raise Failure('Only waiting items can be reordered.')
+        index = keys.index(job_id)
+        other = max(0, min(len(keys)-1, index + direction))
+        waiting[index], waiting[other] = waiting[other], waiting[index]
+        slots = sorted(job.get('order', job['created']) for job in waiting)
+        # The publisher uses the same intake lock when claiming the next job.
+        for job, slot in zip(waiting, slots):
+            with job_lock(job['id'], blocking=False) as acquired:
+                if acquired:
+                    current = load_job(job['id'])
+                    if current['state'] == 'queued':
+                        current['order'] = slot
+                        save_job(current)
+
+
+def delete_episode(job_id):
+    with locked():
+        job = load_job(job_id)
+        if job['state'] != 'done' or not job.get('asset_id') or not job.get('enclosure'):
+            raise Failure('Select an episode published by this version of the app.')
+        config = json.loads(CONFIG.read_text())
+        client = GitHub(config['repo'], get_token(config['repo']))
+        root, sha = client.read_feed()
+        asset = {'id': job['asset_id'], 'browser_download_url': job['enclosure']}
+        if remove_assets_from_feed(root, [asset]):
+            client.write_feed(root, sha)
+        job.update(publication='removal_pending', stage='Removing published audio')
+        save_job(job)
+        client.request('DELETE', '/releases/assets/%s' % job['asset_id'], missing=True)
+        mark_asset_removed(job['asset_id'], 'removed')
+
+
+@contextlib.contextmanager
+def intake_lock():
+    HOME.mkdir(parents=True, exist_ok=True)
+    with (HOME / 'intake.lock').open('w') as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
 
 
 CURRENT_JOB = None
@@ -101,26 +309,45 @@ def list_jobs():
             jobs.append(load_job(path.stem))
         except (Failure, OSError, ValueError, TypeError, AttributeError):
             continue
-    return sorted(jobs, key=lambda job: job.get('created', ''))
+    return sorted(jobs, key=lambda job: job.get('order', job.get('created', '')))
 
 
-def create_job(kind, source=''):
+def create_job(kind, source='', allow_invalid_link=False):
     if kind == 'youtube':
         source, video = youtube_url(source)
         label = 'YouTube · ' + video
     elif kind == 'file':
-        source = str(Path(source).expanduser().absolute())
+        source = str(Path(source).expanduser().resolve())
         if not Path(source).is_file():
             raise Failure('That file is no longer available. Choose it again.')
         label = Path(source).name
+        if Path(source).suffix.lower() not in AUDIO_TYPES + LINK_TYPES:
+            raise Failure('Choose a supported audio track or a saved YouTube video link.')
     elif kind in ('tools', 'check'):
         label = 'Set up YouTube' if kind == 'tools' else 'Check connection'
     else:
         raise Failure('Unknown app action.')
-    job = {'id': uuid.uuid4().hex, 'kind': kind, 'source': source, 'label': label,
+    problem = None
+    key = [kind, source]
+    if kind == 'file' and Path(source).suffix.lower() in LINK_TYPES:
+        try:
+            key = ['youtube', link_file(Path(source))]
+        except Failure as exc:
+            if not allow_invalid_link:
+                raise
+            problem = exc
+    with intake_lock():
+        for previous in list_jobs():
+            previous_key = previous.get('intake_key', [previous['kind'], previous['source']])
+            if previous_key == key and previous['state'] in ('queued', 'running'):
+                return previous
+        job = {'id': uuid.uuid4().hex, 'kind': kind, 'source': source, 'label': label,
            'created': dt.datetime.now(dt.timezone.utc).isoformat(), 'state': 'queued',
-           'stage': 'Waiting to start', 'error': '', 'help': '', 'attempts': 0, 'pid': None}
-    save_job(job)
+           'stage': 'Waiting to start', 'error': '', 'help': '', 'attempts': 0, 'pid': None,
+           'intake_key': key}
+        if problem:
+            fail_job(job, problem)
+        save_job(job)
     return job
 
 
@@ -194,7 +421,8 @@ def retry_job(job_id):
         job = load_job(job_id)
         if job['state'] != 'failed':
             raise Failure('Only a failed or interrupted task needs a retry.')
-        job.update(state='queued', stage='Waiting to retry', error='', help='', pid=None)
+        job.update(state='queued', stage='Waiting to retry', error='', help='', pid=None,
+                   next_attempt=None, auto_retries=0)
         save_job(job)
     return job
 
@@ -228,6 +456,7 @@ def archive_source(path):
     if destination.exists():
         destination = done / (path.stem + '-' + fingerprint(path)[:12] + path.suffix)
     shutil.move(str(path), str(destination))
+    return destination
 
 
 @contextlib.contextmanager
@@ -248,8 +477,7 @@ def record_folder_file(path):
             job.update(state='done', stage='Published', pid=None,
                        message='Published. The original moves into the drop folder’s Published subfolder.')
         except (Failure, OSError, ValueError, ET.ParseError) as exc:
-            job.update(state='failed', stage='Needs attention', pid=None,
-                       error=str(exc), help=recovery_hint(str(exc)))
+            fail_job(job, exc)
             raise
         finally:
             save_job(job)
@@ -280,12 +508,12 @@ def perform_job(job):
     else:
         source = Path(job['source'])
         if source.suffix.lower() in LINK_TYPES:
-            publish_youtube(client, release, link_file(source), now)
+            publish_youtube(client, release, link_file(source), now, prompt=job.get('origin') != 'folder')
         else:
             publish(client, release, source, now)
         if job.get('origin') == 'folder' and source.parent == HOME / 'Drop Audio Here':
-            archive_source(source)
-    return 'Published. Refresh your show in Apple Podcasts; automatic downloads follow its schedule.'
+            job_progress('Original archived', original_path=str(archive_source(source)))
+    return 'Audio uploaded and feed committed. Waiting for GitHub Pages; Apple controls subsequent downloads.'
 
 
 def run_job(job_id, blocking=True):
@@ -296,7 +524,7 @@ def run_job(job_id, blocking=True):
         with job_lock(job_id):
             job = load_job(job_id)
             # The GUI and folder monitor can pick the same queued job. Claim only here.
-            if job['state'] != 'queued':
+            if not ready_job(job):
                 return
             job.update(state='running', pid=os.getpid(), stage='Starting', error='', help='',
                        started=dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -305,16 +533,17 @@ def run_job(job_id, blocking=True):
             save_job(job)
             try:
                 result = perform_job(job)
-                job.update(state='done', stage='Ready' if job['kind'] in ('tools', 'check') else 'Published',
+                job.update(state='done', stage='Ready' if job['kind'] in ('tools', 'check') else
+                           'Feed updating' if job.get('publication') == 'feed_pending' else 'Published',
                            message=result, pid=None)
             except (Failure, OSError, ValueError, TypeError, KeyError, ET.ParseError) as exc:
                 message = str(exc)
                 print('Failed: %s: %s' % (job['label'], message), file=sys.stderr, flush=True)
-                job.update(state='failed', stage='Needs attention', error=message,
-                           help=recovery_hint(message), pid=None)
+                fail_job(job, exc)
             finally:
                 save_job(job)
                 CURRENT_JOB = None
+    confirm_publications()
 
 
 def curl_value(value):
@@ -407,6 +636,8 @@ class GitHub:
             if missing and status == 404:
                 return None
             if status >= 400:
+                if status in (408, 429) or status >= 500:
+                    raise NetworkFailure('GitHub is temporarily unavailable (%s). The app will retry.' % status)
                 raise Failure('GitHub returned %s for %s %s. Check token permissions, '
                               'expiration, connection, and repository access.' %
                               (status, method, path))
@@ -420,6 +651,8 @@ class GitHub:
         except urllib.error.HTTPError as exc:
             if missing and exc.code == 404:
                 return None
+            if exc.code in (408, 429) or exc.code >= 500:
+                raise NetworkFailure('GitHub is temporarily unavailable (%s). The app will retry.' % exc.code) from None
             raise Failure('GitHub returned %s for %s %s. Check token permissions, '
                           'expiration, connection, and repository access.' %
                           (exc.code, method, path)) from None
@@ -448,6 +681,8 @@ class GitHub:
                                          '?' + query, 'POST', headers,
                                          upload=path, max_time=900)
             if status != 201:
+                if status in (408, 429) or status >= 500:
+                    raise NetworkFailure('The upload service is temporarily unavailable (%s).' % status)
                 raise Failure('Audio upload failed (%s). Retry the original file; '
                               'completed uploads are reused.' % status)
             return json.loads(raw)
@@ -461,6 +696,8 @@ class GitHub:
                 response = connection.getresponse()
                 raw = response.read()
                 if response.status != 201:
+                    if response.status in (408, 429) or response.status >= 500:
+                        raise NetworkFailure('The upload service is temporarily unavailable (%s).' % response.status)
                     raise Failure('Audio upload failed (%s). Retry the original file; '
                                   'completed uploads are reused.' % response.status)
                 return json.loads(raw)
@@ -570,7 +807,7 @@ def new_feed():
     return root
 
 
-def add_episode(root, asset, title, now):
+def add_episode(root, asset, title, now, description=None):
     parent = channel(root)
     guid = 'escape-pod-cast:asset-' + str(asset['id'])
     if any(item.findtext('guid') == guid for item in parent.findall('item')):
@@ -579,7 +816,7 @@ def add_episode(root, asset, title, now):
     ET.SubElement(item, 'title').text = title
     ET.SubElement(item, 'guid', {'isPermaLink': 'false'}).text = guid
     ET.SubElement(item, 'pubDate').text = email.utils.format_datetime(now)
-    ET.SubElement(item, 'description').text = 'Added from your Mac.'
+    ET.SubElement(item, 'description').text = description or 'Added from your Mac.'
     ET.SubElement(item, 'enclosure', {'url': asset['browser_download_url'],
                   'length': str(asset['size']), 'type': asset['content_type']})
     ET.SubElement(item, '{%s}explicit' % NS).text = 'false'
@@ -606,15 +843,14 @@ def prepare_audio(source, directory):
     probe = shutil.which('ffprobe')
     codec = ''
     if probe:
-        result = subprocess.run([probe, '-v', 'error', '-select_streams', 'a:0',
+        result = audio_command([probe, '-v', 'error', '-select_streams', 'a:0',
                                  '-show_entries', 'stream=codec_name', '-of',
                                  'default=noprint_wrappers=1:nokey=1', str(source)],
-                                capture_output=True, text=True)
+                                timeout=30)
         if result.returncode == 0:
             codec = result.stdout.strip()
     if not codec and sys.platform == 'darwin':
-        result = subprocess.run(['/usr/bin/afinfo', str(source)],
-                                capture_output=True, text=True)
+        result = audio_command(['/usr/bin/afinfo', str(source)], timeout=30)
         if result.returncode == 0:
             # afinfo prints codec names with or without quotes across macOS
             # versions, for example 'aac ' or aac (0x00000000).
@@ -638,10 +874,11 @@ def prepare_audio(source, directory):
                 str(source), str(target)]
     else:
         raise Failure('Install ffmpeg to convert this audio format.')
-    result = subprocess.run(args, capture_output=True, text=True)
+    result = audio_command(args)
     if result.returncode or not target.exists() or not target.stat().st_size:
-        raise Failure('Could not convert ' + source.name +
-                      '. For formats macOS cannot read, install ffmpeg and retry.')
+        detail = redact((result.stderr or result.stdout or 'The converter did not produce playable audio.').strip()[-2000:])
+        raise Failure('Could not convert ' + source.name + '. ' + detail +
+                      '\nTry a compatible MP3/AAC copy, or install ffmpeg for formats macOS cannot read.')
     return target, '.m4a', 'audio/mp4'
 
 
@@ -680,6 +917,7 @@ def verify_enclosure(url, size):
 
 
 def publish(client, release, source, now, title=None, identity=None):
+    title = (CURRENT_JOB or {}).get('title') or title
     job_progress('Preparing audio', label=title or source.name)
     with tempfile.TemporaryDirectory() as directory:
         # Snapshot before conversion/upload so originals cannot change beneath
@@ -717,8 +955,9 @@ def publish(client, release, source, now, title=None, identity=None):
         # changes the feed. Retrying reuses the already completed audio upload.
         job_progress('Adding the episode to your podcast')
         root, sha = client.read_feed()
-        if add_episode(root, asset, title or source.stem, now):
+        if add_episode(root, asset, title or source.stem, now, (CURRENT_JOB or {}).get('description')):
             client.write_feed(root, sha)
+        remember_episode(asset, now)
         print('Published: ' + (title or source.name), flush=True)
 
 
@@ -1006,8 +1245,10 @@ def publish_youtube(client, release, value, now, prompt=True):
         job_progress('Reusing your completed audio upload', label=existing.get('label') or 'YouTube · ' + video)
         verify_enclosure(existing['browser_download_url'], existing['size'])
         root, sha = client.read_feed()
-        if add_episode(root, existing, existing.get('label') or 'YouTube ' + video, now):
+        if add_episode(root, existing, (CURRENT_JOB or {}).get('title') or existing.get('label') or 'YouTube ' + video,
+                       now, (CURRENT_JOB or {}).get('description')):
             client.write_feed(root, sha)
+        remember_episode(existing, now)
         print('Published existing YouTube audio: ' + video, flush=True)
         return
     tools = active_youtube_tools()
@@ -1033,6 +1274,7 @@ def cleanup(client, release, now):
     # next hour, including orphaned uploads that never reached the feed.
     for asset in expired:
         client.request('DELETE', '/releases/assets/%s' % asset['id'])
+        mark_asset_removed(asset['id'], 'expired')
     print('Removed %s expired audio file(s).' % len(expired), flush=True)
 
 
@@ -1149,12 +1391,46 @@ def main():
     if args.setup:
         setup(args.setup)
         return
+    if not args.maintain and (args.files or args.youtube):
+        jobs, errors = [], []
+        for kind, source in [('file', path) for path in args.files] + ([('youtube', args.youtube)] if args.youtube else []):
+            try:
+                jobs.append(create_job(kind, source))
+            except (Failure, OSError, ValueError) as exc:
+                errors.append(str(exc))
+        for job in jobs:
+            run_job(job['id'])
+        if errors or any(load_job(job['id'])['state'] == 'failed' for job in jobs):
+            raise Failure('Some items need attention. Successful items are kept; open the app to retry. ' + '\n'.join(errors))
+        return
     if args.maintain:
         recover_jobs()
+        inbox = HOME / 'Drop Audio Here'
+        inbox.mkdir(parents=True, exist_ok=True)
+        if not queue_paused():
+            history = list_jobs()
+            for path in inbox.iterdir():
+                if (path.is_file() and not path.name.startswith('.') and path.suffix.lower() in AUDIO_TYPES + LINK_TYPES
+                        and dt.datetime.now().timestamp() - path.stat().st_mtime >= 60):
+                    previous = next((job for job in reversed(history) if job.get('origin') == 'folder' and
+                                     job['source'] == str(path.resolve()) and job['state'] in ('failed', 'queued', 'running')), None)
+                    if previous is not None:
+                        continue
+                    try:
+                        job = create_job('file', path, allow_invalid_link=True)
+                        with job_lock(job['id'], blocking=False) as acquired:
+                            if acquired:
+                                job = load_job(job['id'])
+                                if job['state'] in ('queued', 'failed'):
+                                    job['origin'] = 'folder'
+                                    save_job(job)
+                    except (Failure, OSError, ValueError) as exc:
+                        print('Drop folder: ' + str(exc), file=sys.stderr, flush=True)
         # Queued items survive closing the window or restarting the Mac.
         for job in list_jobs():
-            if job['state'] == 'queued':
+            if ready_job(job):
                 run_job(job['id'], blocking=False)
+        confirm_publications()
     with locked(blocking=not args.maintain) as acquired:
         if not acquired:
             return
@@ -1168,12 +1444,6 @@ def main():
         candidates = []
         if args.maintain:
             inbox.mkdir(exist_ok=True)
-            for path in inbox.iterdir():
-                if (path.is_file() and not path.name.startswith('.') and
-                    path.suffix.lower() in ('.mp3', '.m4a', '.aac', '.wav', '.flac',
-                                            '.ogg', '.opus', '.aif', '.aiff', '.mp4') + LINK_TYPES and
-                    dt.datetime.now().timestamp() - path.stat().st_mtime >= 60):
-                    candidates.append(path)
             last = HOME / 'last-cleanup'
             if not candidates and last.exists() and not args.files and not args.youtube:
                 if dt.datetime.now().timestamp() - last.stat().st_mtime < 3600:
@@ -1188,14 +1458,6 @@ def main():
             except (Failure, OSError, ValueError, ET.ParseError) as exc:
                 print('Failed: YouTube link: ' + str(exc), file=sys.stderr, flush=True)
                 failed.append(args.youtube)
-        if args.maintain:
-            done = inbox / 'Published'
-            done.mkdir(parents=True, exist_ok=True)
-            errors = process_files(client, release, candidates, now, prompt=False, track=True)
-            failed.extend(errors)
-            for path in candidates:
-                if path not in errors:
-                    archive_source(path)
         cleanup(client, release, now)
         (HOME / 'last-cleanup').touch()
         if failed:
@@ -1209,7 +1471,7 @@ if __name__ == '__main__':
         if '--notify' in sys.argv:
             message = ('YouTube helpers are ready. Open the app and choose “Paste YouTube link…”.'
                        if '--youtube-setup' in sys.argv else
-                       'Audio published. Apple Podcasts will pick it up when it refreshes your show.')
+                       'Audio accepted. Open the app for publication and retry status; Apple controls later downloads.')
             subprocess.run(['/usr/bin/osascript', '-e',
                             'display dialog "' + message + '" buttons {"OK"} '
                             'default button "OK" with title "Escape Pod Cast"'])

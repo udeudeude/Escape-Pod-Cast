@@ -19,7 +19,7 @@ import escape_pod_cast as p
 
 HERE = Path(__file__).resolve().parent
 SOURCE_REPO = 'udeudeude/Escape-Pod-Cast'
-APP_VERSION = '0.6.0'
+APP_VERSION = '0.7.0'
 UPDATE_FILES = ('mac/escape_pod_cast.py', 'mac/app.py', 'mac/install.py')
 CREAM, PANEL, INK, ORANGE = '#f7f2e8', '#fffcf6', '#172e3e', '#aa4824'
 AUDIO_TYPES = ('.mp3', '.m4a', '.aac', '.wav', '.flac', '.ogg', '.opus', '.aif', '.aiff', '.mp4')
@@ -34,9 +34,16 @@ def transmission_position(job=None, updating=False):
     if job['state'] == 'failed':
         return 0, 'CHECK SIGNAL', '#963d32'
     if job['state'] == 'done':
-        return (3, 'ON AIR', '#386451') if job['kind'] in ('file', 'youtube') else (0, 'READY', INK)
+        if job['kind'] not in ('file', 'youtube'):
+            return 0, 'READY', INK
+        status = p.episode_status(job)
+        if status.startswith('Available'):
+            return 3, 'ON AIR', '#386451'
+        if status == 'Feed updating':
+            return 2, 'FEED UPDATING', ORANGE
+        return 0, status.split(' · ')[0].upper(), INK
     if job['state'] == 'queued':
-        return 0, 'WAITING', ORANGE
+        return 0, 'PAUSED' if p.queue_paused() else 'RETRY WAIT' if job.get('next_attempt') else 'WAITING', ORANGE
     stage = job.get('stage', '').lower()
     if any(word in stage for word in ('upload', 'feed', 'episode', 'playback', 'delivery', 'enclosure', 'publishing')):
         return 2, 'TRANSMITTING', ORANGE
@@ -250,7 +257,8 @@ class MacDropZone:
                 ('draggingExited:', None, b'v@:@', 'exit'),
                 ('prepareForDragOperation:', ctypes.c_bool, bool_encoding, 'prepare'),
                 ('performDragOperation:', ctypes.c_bool, bool_encoding, 'perform'),
-                ('concludeDragOperation:', None, b'v@:@', 'exit')):
+                ('concludeDragOperation:', None, b'v@:@', 'exit'),
+                ('mouseDown:', None, b'v@:@', 'click')):
                 def callback(receiver, selector, sender, action=action):
                     instance = MacDropZone.instances.get(receiver)
                     if not instance:
@@ -363,6 +371,9 @@ class MacDropZone:
         # Even root.after_idle() is a Tcl call: it clears _tkinter's saved
         # thread state and can abort the next timer with NULL tstate.
         # Only pass ordinary Python data here. The Tk timer consumes it later.
+        if action == 'click':
+            self.window.drop_messages.put(('choose', None))
+            return
         if action == 'exit':
             self.window.drop_messages.put(('preview', (None, False)))
             return
@@ -375,7 +386,7 @@ class MacDropZone:
                 self.window.drop_messages.put(('drop', tuple(values)))
             self.window.drop_messages.put(('preview', (None, False)))
         elif action == 'preview':
-            caption = 'Release to publish' if accepted else 'Drop audio tracks or a YouTube video link'
+            caption = ('Release to queue (paused)' if p.queue_paused() else 'Release to publish') if accepted else 'Drop audio tracks or a YouTube video link'
             self.window.drop_messages.put(('preview', (caption, bool(accepted))))
         return bool(accepted)
 
@@ -388,9 +399,16 @@ class MacDropZone:
 
 
 def submit_inputs(files=(), youtube=None, tools=False):
-    jobs = [p.create_job('file', path) for path in files]
-    if youtube is not None:
-        jobs.append(p.create_job('youtube', youtube))
+    jobs, errors = [], []
+    for kind, source in [('file', path) for path in files] + ([('youtube', youtube)] if youtube is not None else []):
+        try:
+            jobs.append(p.create_job(kind, source))
+        except (p.Failure, OSError, ValueError) as exc:
+            errors.append(str(exc))
+    if errors:
+        folder = p.HOME / 'Intake Errors'
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / (p.uuid.uuid4().hex + '.json')).write_text(json.dumps(errors))
     if tools:
         jobs.append(p.create_job('tools'))
     return jobs
@@ -468,6 +486,7 @@ class Window:
         self.drop_messages = queue.Queue()
         self.jobs, self.last_rows = {}, None
         self.pulsing = False
+        self.reduced_motion = (p.HOME / 'reduced-motion').exists()
         self.focus_stamp = 0
         root.title('Escape Pod Cast')
         root.geometry(f'860x{max(680, min(800, root.winfo_screenheight() - 100))}')
@@ -493,7 +512,7 @@ class Window:
         faceplate = ttk.Frame(body)
         faceplate.grid(row=0, sticky='ew')
         ttk.Label(faceplate, text='escape pod cast', font=('Helvetica', 28, 'bold')).pack(side='left')
-        ttk.Label(faceplate, text='PERSONAL RADIO\nMODEL 006 / SIDE A', justify='right',
+        ttk.Label(faceplate, text='PERSONAL RADIO\nMODEL 007 / SIDE A', justify='right',
                   font=('Courier', 10, 'bold'), foreground=ORANGE).pack(side='right')
         ttk.Label(body, text='A small machine for sending sound to your pocket.',
                   font=('Helvetica', 12)).grid(row=1, sticky='w', pady=(0, 8))
@@ -505,6 +524,10 @@ class Window:
         self.drop_zone = tk.Canvas(body, height=154, background=CREAM, highlightthickness=0)
         self.drop_zone.grid(row=2, sticky='ew')
         self.drop_zone.bind('<Configure>', lambda event: self.draw_drop())
+        self.drop_zone.bind('<Button-1>', lambda event: self.add_audio())
+        self.drop_zone.configure(takefocus=True, highlightcolor=ORANGE)
+        self.drop_zone.bind('<Return>', lambda event: self.add_audio())
+        self.drop_zone.bind('<space>', lambda event: self.add_audio())
         self.drop_bridge = None
         if sys.platform == 'darwin':
             try:
@@ -528,6 +551,8 @@ class Window:
         heading = ttk.Frame(body)
         heading.grid(row=4, sticky='ew', pady=(0, 6))
         ttk.Label(heading, text='THE TAPE RACK', font=('Courier', 12, 'bold')).pack(side='left')
+        self.pause_button = ttk.Button(heading, text='Resume' if p.queue_paused() else 'Pause queue', command=self.toggle_pause)
+        self.pause_button.pack(side='left', padx=12)
         self.summary = tk.StringVar(value='Ready to add your first episode')
         ttk.Label(heading, textvariable=self.summary, font=('Helvetica', 11)).pack(side='right')
         table = ttk.Frame(body)
@@ -564,6 +589,12 @@ class Window:
         self.retry.grid(row=3, sticky='w', pady=(10, 0))
         self.remove = ttk.Button(detail, text='Remove from queue', command=self.remove_selected, state='disabled')
         self.remove.grid(row=3, sticky='e', pady=(10, 0))
+        controls = ttk.Frame(detail)
+        controls.grid(row=4, sticky='ew', pady=(6, 0))
+        for text, command in (('Edit…', self.edit_episode), ('Preview', self.preview_episode),
+                              ('Earlier', lambda: self.move_selected(-1)), ('Later', lambda: self.move_selected(1)),
+                              ('Retry all', self.retry_all), ('Delete episode…', self.delete_selected)):
+            ttk.Button(controls, text=text, command=command).pack(side='left', padx=(0, 4))
         bottom = ttk.Frame(body)
         bottom.grid(row=7, sticky='ew')
         ttk.Button(bottom, text='Connect iPhone…', command=self.connect_phone).pack(side='left')
@@ -585,7 +616,7 @@ class Window:
         root.after(450, self.animate_radio)
 
     def process_drop_messages(self):
-        preview, drops = None, []
+        preview, drops, choose = None, [], False
         while True:
             try:
                 kind, value = self.drop_messages.get_nowait()
@@ -595,12 +626,16 @@ class Window:
                 preview = value
             elif kind == 'drop':
                 drops.append(value)
+            elif kind == 'choose':
+                choose = True
         if preview is not None:
             self.drop_preview = preview
             self.draw_drop(*preview)
         for values in drops:
             if not self.updating:
                 self.queue_drop(values)
+        if choose and not self.updating:
+            self.add_audio()
         self.root.after(75, self.process_drop_messages)
 
     def destroy_drop(self, event):
@@ -637,7 +672,7 @@ class Window:
         note = 'CLICK. TRACK RECEIVED.' if self.hatch_pulse else caption or self.drop_hint
         # Two short lines fit the narrowest supported window.
         if note == self.drop_hint and 'Drop here' in note:
-            note = 'DROP HERE / AUTO-PUBLISH'
+            note = 'QUEUE PAUSED / DROP TO WAIT' if p.queue_paused() else 'DROP HERE / AUTO-PUBLISH'
         canvas.create_text(middle, 116, text=note, fill=ORANGE if active else INK,
                            font=('Helvetica', 10, 'bold'))
         self.draw_dial(canvas, width)
@@ -670,11 +705,13 @@ class Window:
                            fill=INK, font=('Courier', 7))
 
     def animate_radio(self):
-        self.lamp_tick = not self.lamp_tick
+        self.lamp_tick = True if self.reduced_motion else not self.lamp_tick
         self.draw_drop()
         self.root.after(450, self.animate_radio)
 
     def acknowledge_drop(self):
+        if getattr(self, 'reduced_motion', False):
+            return
         self.hatch_pulse += 1
         stamp = self.hatch_pulse
         phases = iter((1, 2, 3, 3, 2, 1, 0))
@@ -733,11 +770,77 @@ class Window:
                     filetypes=[('Audio and saved links', '*.mp3 *.m4a *.aac *.wav *.flac *.ogg *.opus *.aif *.aiff *.mp4 *.webloc *.url *.txt'),
                                ('All files', '*')])
         if paths:
+            self.queue_drop(paths)
+
+    def toggle_pause(self):
+        p.pause_queue(not p.queue_paused())
+        self.pause_button.configure(text='Resume' if p.queue_paused() else 'Pause queue')
+
+    def move_selected(self, direction):
+        if self.selected:
             try:
-                jobs = submit_inputs(paths)
-                self.selected = jobs[-1]['id']
+                p.move_job(self.selected, direction)
             except (p.Failure, OSError, ValueError) as exc:
                 self.show_error(exc)
+
+    def retry_all(self):
+        for job in p.list_jobs():
+            if job['state'] == 'failed':
+                try:
+                    p.retry_job(job['id'])
+                except (p.Failure, OSError, ValueError) as exc:
+                    self.show_error(exc)
+
+    def edit_episode(self):
+        job = self.jobs.get(self.selected)
+        if not job or job['state'] not in ('queued', 'failed') or job['kind'] not in ('file', 'youtube'):
+            self.show_error('Pause the queue, then select a waiting or failed audio item to edit.')
+            return
+        editor = self.tk.Toplevel(self.root)
+        editor.title('Edit episode')
+        editor.geometry('550x330')
+        frame = self.ttk.Frame(editor, padding=16)
+        frame.pack(fill='both', expand=True)
+        self.ttk.Label(frame, text='Episode title').pack(anchor='w')
+        title = self.tk.StringVar(value=job.get('title') or job['label'])
+        entry = self.ttk.Entry(frame, textvariable=title)
+        entry.pack(fill='x', pady=(4, 12))
+        self.ttk.Label(frame, text='Description').pack(anchor='w')
+        description = self.tk.Text(frame, height=7, wrap='word', background=PANEL, foreground=INK)
+        description.pack(fill='both', expand=True, pady=4)
+        description.insert('1.0', job.get('description', ''))
+        def save():
+            try:
+                p.edit_job(job['id'], title.get(), description.get('1.0', 'end-1c'))
+                editor.destroy()
+            except (p.Failure, OSError, ValueError) as exc:
+                self.show_error(exc)
+        self.ttk.Button(frame, text='Save episode', command=save).pack(anchor='e', pady=(8, 0))
+        entry.focus_set()
+
+    def preview_episode(self):
+        job = self.jobs.get(self.selected)
+        path = Path(job.get('original_path') or job.get('source', '')) if job else None
+        if not job or job['kind'] != 'file' or not path.is_file() or path.suffix.lower() not in p.AUDIO_TYPES:
+            self.show_error('Preview a local audio track whose original is still available. YouTube previews are not downloaded here.')
+            return
+        subprocess.Popen(['/usr/bin/open', str(path)])
+
+    def delete_selected(self):
+        job = self.jobs.get(self.selected)
+        if not job or job['state'] != 'done' or not job.get('asset_id'):
+            self.show_error('Select an episode published by this version of the app.')
+            return
+        if not self.dialogs['message'].askyesno('Delete published episode?',
+                'Remove “' + job['label'] + '” from the feed and delete its GitHub audio? Your original is kept. '
+                'Already-downloaded iPhone copies are controlled by Apple Podcasts.', parent=self.root):
+            return
+        def task():
+            try:
+                p.delete_episode(job['id'])
+            except (p.Failure, OSError, ValueError) as exc:
+                self.messages.put(('error', str(exc)))
+        threading.Thread(target=task, daemon=True).start()
 
     def paste_link(self):
         try:
@@ -767,6 +870,8 @@ class Window:
             return
         stage = job.get('stage', 'Waiting')
         state = job['state']
+        if state in ('queued', 'done'):
+            stage = p.episode_status(job)
         if state == 'running' and job.get('started'):
             try:
                 elapsed = max(0, int((p.dt.datetime.now(p.dt.timezone.utc) - p.stamp(job['started'])).total_seconds()))
@@ -779,9 +884,14 @@ class Window:
         if state == 'failed':
             self.explanation.set(job['label'] + '\n' + job.get('error', '') + '\n\n' + job.get('help', ''))
         elif state in ('done', 'cancelled'):
-            self.explanation.set(job['label'] + '\n' + job.get('message', 'Published. Refresh your show in Apple Podcasts.'))
+            message = job.get('message', 'This older publication has not been verified against the public feed.')
+            if job.get('publication') in ('expired', 'removed', 'removal_pending'):
+                message = p.episode_status(job) + '. Your original is kept; iPhone download retention is controlled by Apple Podcasts.'
+            self.explanation.set(job['label'] + '\n' + message +
+                                 ('\nExpiry: ' + job['expires_at'][:10] if job.get('expires_at') else ''))
         else:
-            self.explanation.set(job['label'] + '\nKeep this Mac awake and connected. You can add more items; they wait their turn. '
+            self.explanation.set(job['label'] + '\n' + (job.get('error', '') + '\n' if job.get('next_attempt') else '') +
+                                 'Keep this Mac awake and connected. You can add more items; they wait their turn. '
                                  'Closing this window does not cancel publishing.')
         active = state in ('queued', 'running')
         if active and not self.pulsing:
@@ -875,23 +985,68 @@ class Window:
     def settings(self):
         window = self.tk.Toplevel(self.root)
         window.title('Settings & help')
-        window.geometry('570x510')
+        window.geometry('570x640')
         frame = self.ttk.Frame(window, padding=22)
         frame.pack(fill='both', expand=True)
         config = connection()
-        self.ttk.Label(frame, text='Your connection', font=('Helvetica', 17, 'bold')).pack(anchor='w')
+        self.ttk.Label(frame, text='Escape Pod Cast ' + APP_VERSION, font=('Helvetica', 17, 'bold')).pack(anchor='w')
         self.ttk.Label(frame, text='Escape Pod Cast ' + APP_VERSION).pack(anchor='w', pady=(4, 0))
         self.ttk.Label(frame, text=config.get('repo', 'Not connected'), wraplength=520).pack(anchor='w', pady=(5, 12))
         self.ttk.Button(frame, text='Check connection & feed', command=lambda: self.enqueue_action('check')).pack(anchor='w', pady=3)
         self.ttk.Button(frame, text='Reconnect GitHub…', command=self.reconnect).pack(anchor='w', pady=3)
         self.ttk.Button(frame, text='Set up / update YouTube…', command=lambda: self.enqueue_action('tools')).pack(anchor='w', pady=3)
         self.ttk.Button(frame, text='Update this app…', command=self.update_app).pack(anchor='w', pady=3)
+        self.ttk.Button(frame, text='Restore previous version…', command=self.rollback_app).pack(anchor='w', pady=3)
+        motion = self.tk.BooleanVar(value=self.reduced_motion)
+        def toggle_motion():
+            self.reduced_motion = motion.get()
+            path = p.HOME / 'reduced-motion'
+            if self.reduced_motion:
+                path.touch()
+                self.hatch_pulse, self.hatch_motion = 0, 0
+            else:
+                path.unlink(missing_ok=True)
+        self.ttk.Checkbutton(frame, text='Reduced motion (steady lamp, no hatch animation)',
+                             variable=motion, command=toggle_motion).pack(anchor='w', pady=5)
+        self.ttk.Button(frame, text='Export redacted diagnostics…', command=self.export_diagnostics).pack(anchor='w', pady=3)
         self.ttk.Separator(frame).pack(fill='x', pady=14)
         self.ttk.Button(frame, text='Open drop folder', command=self.open_folder).pack(anchor='w', pady=3)
         self.ttk.Button(frame, text='Open detailed publishing log', command=open_log).pack(anchor='w', pady=3)
         self.ttk.Label(frame, text='The drop folder is optional. Add audio and Get audio are the easiest ways to publish. '
                        'Only copy material you have permission to publicly host. '
                        'Restricted YouTube videos and live streams are unsupported.', wraplength=520).pack(anchor='w', pady=(14, 0))
+
+    def export_diagnostics(self):
+        path = self.dialogs['file'].asksaveasfilename(parent=self.root, title='Export diagnostics',
+                initialfile='Escape-Pod-Cast-diagnostics.json', defaultextension='.json')
+        if path:
+            try:
+                report = p.diagnostic_report()
+                report['app_version'] = APP_VERSION
+                report['tcl'] = self.root.tk.call('info', 'patchlevel')
+                report['tk'] = self.root.tk.call('package', 'provide', 'Tk')
+                Path(path).write_text(json.dumps(report, indent=2))
+                self.dialogs['message'].showinfo('Diagnostics exported',
+                    'Tokens, the random feed address, and home paths were redacted. Review the file before sharing; log text may include episode titles.', parent=self.root)
+            except OSError as exc:
+                self.show_error(exc)
+
+    def rollback_app(self):
+        if self.updating or any(job['state'] in ('queued', 'running') for job in p.list_jobs()):
+            self.show_error('Pause/remove waiting items and let current publishing finish before restoring a version.')
+            return
+        if not self.dialogs['message'].askyesno('Restore previous version?',
+                'Restore the previous app and runtime together? Your connection and activity are retained.', parent=self.root):
+            return
+        def task():
+            try:
+                result = subprocess.run([sys.executable, str(HERE / 'install.py'), '--rollback'])
+                if result.returncode:
+                    raise p.Failure('Restore did not finish. Check the publishing log.')
+                self.messages.put(('updated', ''))
+            except (p.Failure, OSError) as exc:
+                self.messages.put(('error', str(exc)))
+        threading.Thread(target=task, daemon=True).start()
 
     def finish_update(self):
         self.root.destroy()
@@ -903,6 +1058,13 @@ class Window:
         subprocess.Popen(['/usr/bin/open', str(path)])
 
     def refresh(self):
+        for path in (p.HOME / 'Intake Errors').glob('*.json'):
+            try:
+                errors = json.loads(path.read_text())
+                path.unlink()
+                self.show_error('Some inputs could not be added:\n' + '\n'.join(errors))
+            except (OSError, ValueError, TypeError):
+                continue
         try:
             while True:
                 kind, message = self.messages.get_nowait()
@@ -944,11 +1106,12 @@ class Window:
                 queued = [job for job in jobs if job['state'] == 'queued']
                 running = [job for job in jobs if job['state'] == 'running']
                 failed = [job for job in jobs if job['state'] == 'failed']
-            if self.worker is None and queued:
+            ready = [job for job in queued if p.ready_job(job)]
+            if self.worker is None and ready:
                 try:
-                    self.worker = launch_worker(queued[0])
-                    self.worker_id = queued[0]['id']
-                    self.selected = queued[0]['id']
+                    self.worker = launch_worker(ready[0])
+                    self.worker_id = ready[0]['id']
+                    self.selected = ready[0]['id']
                 except OSError as exc:
                     job = queued[0]
                     job.update(state='failed', stage='Could not start', error=str(exc),
@@ -958,14 +1121,14 @@ class Window:
         # Keep active/failed items visible; cap old completed rows only.
         visible = [job for job in jobs if job['state'] not in ('done', 'cancelled')] + [job for job in jobs if job['state'] in ('done', 'cancelled')][-30:]
         visible.sort(key=lambda job: job['created'], reverse=True)
-        rows = [(job['id'], job['label'], job['state']) for job in visible]
+        rows = [(job['id'], job['label'], p.episode_status(job)) for job in visible]
         if rows != self.last_rows:
             names = {'queued': 'Waiting', 'running': 'Publishing…', 'failed': 'Needs attention',
                      'done': 'Done', 'cancelled': 'Removed'}
-            numbers = {job['id']: index+1 for index, job in enumerate(jobs)}
+            numbers = {job['id']: index+1 for index, job in enumerate(sorted(jobs, key=lambda item: item['created']))}
             entries = []
             for job in visible:
-                status = 'Published' if job['state'] == 'done' and job['kind'] in ('file', 'youtube') else names[job['state']]
+                status = p.episode_status(job)
                 entries.append(dict(job, status=status, number=numbers[job['id']]))
             self.table.sync(entries)
             self.last_rows = rows
@@ -976,6 +1139,7 @@ class Window:
             self.table.selection_set(self.selected)
         self.summary.set('%s waiting · %s working · %s need attention' % (len(queued), len(running), len(failed))
                          if jobs else 'Ready to add your first episode')
+        self.pause_button.configure(text='Resume' if p.queue_paused() else 'Pause queue')
         config = connection()
         self.connection_text.set('Connected to ' + config['repo'] if config.get('repo') else 'Not connected — open Settings to connect your GitHub copy.')
         if not self.updating:

@@ -8,6 +8,14 @@ Your Mac prepares the audio and updates a static feed. Your existing GitHub acco
 
 ## Everyday use
 
+**New in 0.7.0:** Pause/resume, bounded automatic network retries, exact public-feed confirmation, expiry labels, editable waiting-episode metadata, queue ordering, local preview, Retry all, confirmed published deletion, reduced motion, redacted diagnostics, complete version rollback, and a downloadable Mac setup app. See [development status and remaining work](BACKLOG.md) and [native Mac checks](MAC-CHECKS.md).
+
+Pause the queue **before adding tracks** when you want time to edit titles/descriptions or change their order. Existing work finishes. **Feed updating** means the repository was updated but public RSS has not yet confirmed that episode. **Available** means its GUID and audio URL appear in public RSS; Apple still controls refresh/download timing. **Expiry due** means the 14-day deadline passed but deletion has not yet been confirmed; **Expired** means cleanup deleted the audio. Older history is marked unverified rather than pretending it was checked.
+
+Transient connection/server failures retry after 30, 120, and 300 seconds, then require manual attention. Permission, certificate, and conversion errors do not loop automatically. Pause and retry scheduling persist while the window is closed. **Delete episode…** separately confirms removing published audio; it is not the queue's Remove action. **Preview** opens an available local original in its default Mac player. It does not download YouTube audio for preview.
+
+The [Mac app releases](https://github.com/udeudeude/Escape-Pod-Cast/releases) include an unsigned **Escape Pod Cast Setup.app** ZIP after macOS CI succeeds. Unzip and open it for native setup windows. Python/Tk is still required; setup offers the official download if missing. macOS may require **Privacy & Security → Open Anyway**. The source ZIP and START-HERE.command remain available. The setup app uses a portable shell launcher and compiles the publishing app on your own Mac.
+
 1. Open **Escape Pod Cast.app** and drop audio tracks or a YouTube video link onto the large panel inside the window. Publishing starts automatically. **Add audio…**, the paste field, and Dock/Finder icon drops are also available.
 2. Watch the current stage and activity list in the app. Add more items whenever you like; they wait their turn.
 3. When an item says **Published**, refresh your show in Apple Podcasts. Enable automatic downloads on the iPhone.

@@ -1,0 +1,47 @@
+name: Mac checks and downloadable app
+on:
+  push:
+    branches: [main]
+    paths: ['mac/**', 'tools/**', 'tests/**', 'Install.command', '.github/workflows/mac-release.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install conversion tools for real audio tests
+        run: brew install ffmpeg
+      - name: Automated regression and conversion checks
+        run: python3 -m unittest discover -s tests -v
+      - name: Compile the native droplet on macOS
+        run: |
+          python3 - <<'PY'
+          import sys, tempfile, subprocess
+          from pathlib import Path
+          sys.path.insert(0, 'mac')
+          import install
+          with tempfile.TemporaryDirectory() as temp:
+              source = Path(temp) / 'droplet.applescript'
+              source.write_text(install.droplet_source(sys.executable, Path(temp)/'publisher.py', Path(temp)/'drop', Path(temp)/'log', 'https://example.com/feed.xml'))
+              subprocess.run(['/usr/bin/osacompile', '-o', str(Path(temp)/'Test.app'), str(source)], check=True)
+          PY
+      - name: Package setup application
+        run: python3 tools/build_mac_app.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Escape-Pod-Cast-Mac
+          path: dist/*.zip
+      - name: Publish versioned download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          EPC_VERSION=$(python3 -c "import re,pathlib; print(re.search(r\"APP_VERSION = '([^']+)'\", pathlib.Path('mac/app.py').read_text()).group(1))")
+          if ! gh release view "app-v$EPC_VERSION" >/dev/null 2>&1; then
+            gh release create "app-v$EPC_VERSION" --target "$GITHUB_SHA" --title "Escape Pod Cast $EPC_VERSION" --notes "Download the Mac setup app ZIP, unzip, and open Escape Pod Cast Setup.app. Requires Python/Tk; setup offers the official installer if needed. Unsigned: macOS may require Privacy & Security → Open Anyway. Targets macOS 11.7.11 and 15.x."
+          fi
+          gh release upload "app-v$EPC_VERSION" dist/*.zip --clobber

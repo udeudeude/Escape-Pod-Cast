@@ -237,7 +237,7 @@ class MacAudioTests(unittest.TestCase):
                 patch.object(p.subprocess, 'run', return_value=result) as run:
             self.assertEqual(p.prepare_audio(source, self.directory), (source, suffix, mime))
         run.assert_called_once_with(['/usr/bin/afinfo', str(source)],
-                                    capture_output=True, text=True)
+                                        capture_output=True, text=True, timeout=30)
         self.assertEqual(source.read_bytes(), self.original)
 
     def test_mac_aac_output_without_quotes_passes_through(self):

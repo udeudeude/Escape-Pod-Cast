@@ -128,6 +128,7 @@ class RadioDesignTests(unittest.TestCase):
             job['stage'] = stage
             self.assertEqual(app.transmission_position(job)[:2], (2, 'TRANSMITTING'))
         job['state'] = 'done'
+        job['publication'] = 'available'
         self.assertEqual(app.transmission_position(job)[:2], (3, 'ON AIR'))
         job['kind'] = 'check'
         self.assertEqual(app.transmission_position(job)[:2], (0, 'READY'))
@@ -243,12 +244,14 @@ class QueueTests(AppFixture):
 
     def test_error_and_retry_retain_source_and_record_real_problem(self):
         job = p.create_job('file', self.audio)
+        job['auto_retries'] = len(p.RETRY_DELAYS)
+        p.save_job(job)
         with patch.object(p, 'perform_job', side_effect=p.NetworkFailure('The connection timed out.')):
             p.run_job(job['id'])
         failed = p.load_job(job['id'])
         self.assertEqual(failed['state'], 'failed')
         self.assertIn('timed out', failed['error'])
-        self.assertIn('do not need a new', failed['help'])
+        self.assertIn('Retry', failed['help'])
         p.retry_job(job['id'])
         with patch.object(p, 'perform_job', return_value='success'):
             p.run_job(job['id'])
@@ -522,7 +525,8 @@ class UpdateTests(unittest.TestCase):
         self.assertIn('quoted form of (argumentText as text)', script)
 
 
-@unittest.skipUnless(os.environ.get('DISPLAY') or sys.platform == 'darwin', 'GUI checks need a display (or Xvfb)')
+@unittest.skipUnless(os.environ.get('DISPLAY') or (sys.platform == 'darwin' and os.environ.get('EPC_MAC_GUI_TESTS')),
+                     'GUI checks need a display or EPC_MAC_GUI_TESTS=1 in an interactive Mac session')
 class WindowTests(AppFixture):
     def setUp(self):
         super().setUp()

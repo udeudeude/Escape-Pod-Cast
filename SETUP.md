@@ -1,5 +1,7 @@
 # Install Escape Pod Cast on your Mac
 
+The [app releases](https://github.com/udeudeude/Escape-Pod-Cast/releases) offer a Mac setup-app ZIP after automated Mac checks pass. Unzip and open **Escape Pod Cast Setup.app**. It uses the same connection/update wizard below, with no Terminal window. Python/Tk is still needed; setup offers the official download if missing. The app is unsigned, so macOS may require **Privacy & Security → Open Anyway**. The source-download method remains available:
+
 1. [Download the current version](https://github.com/udeudeude/Escape-Pod-Cast/archive/refs/heads/main.zip) and unzip it.
 2. Double-click **START-HERE.command**.
 3. Follow the Mac setup windows. No Terminal typing is required.

@@ -324,8 +324,8 @@ class AppTests(unittest.TestCase):
                 self.assertEqual(publish.call_args.args[2], URL)
                 publish.reset_mock()
                 with patch.object(sys, 'argv', ['publisher', '--maintain']):
-                    with self.assertRaisesRegex(p.Failure, '1 item'):
-                        p.main()
+                    p.main()
+                self.assertEqual(len([job for job in p.list_jobs() if job['state'] == 'failed']), 1)
                 self.assertFalse(publish.call_args.kwargs['prompt'])
                 self.assertTrue((inbox / 'Published/good.webloc').exists())
                 self.assertTrue(bad.exists())

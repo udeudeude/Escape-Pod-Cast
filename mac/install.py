@@ -17,6 +17,7 @@ HOME = Path.home() / 'Library/Application Support/Escape Pod Cast'
 APP = Path.home() / 'Applications/Escape Pod Cast.app'
 AGENT = Path.home() / 'Library/LaunchAgents/com.escapepodcast.publisher.plist'
 SOURCE_REPO = 'udeudeude/Escape-Pod-Cast'
+RUNTIME_FILES = ('escape_pod_cast.py', 'app.py', 'install.py')
 
 
 class Cancelled(Exception):
@@ -269,6 +270,75 @@ end runWindow
     return window + source
 
 
+def snapshot_version(destination):
+    destination.mkdir(parents=True)
+    files = []
+    for filename in RUNTIME_FILES:
+        if (HOME / filename).exists():
+            shutil.copy2(HOME / filename, destination / filename)
+            files.append(filename)
+    if APP.exists():
+        shutil.copytree(APP, destination / 'App.app')
+    if AGENT.exists():
+        shutil.copy2(AGENT, destination / 'agent.plist')
+    (destination / 'manifest.json').write_text(json.dumps({'files': files, 'complete':
+                                                          APP.exists() and len(files) == len(RUNTIME_FILES)}))
+
+
+def load_agent():
+    target = 'gui/%s' % os.getuid()
+    subprocess.run(['/bin/launchctl', 'bootout', target, str(AGENT)],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if AGENT.exists():
+        subprocess.run(['/bin/launchctl', 'bootstrap', target, str(AGENT)], check=True)
+
+
+def restore_snapshot(snapshot):
+    files = json.loads((snapshot / 'manifest.json').read_text())['files']
+    for filename in RUNTIME_FILES:
+        if filename in files:
+            temporary = HOME / (filename + '.restore')
+            shutil.copy2(snapshot / filename, temporary)
+            os.replace(temporary, HOME / filename)
+        else:
+            (HOME / filename).unlink(missing_ok=True)
+    if (snapshot / 'App.app').exists():
+        staging = APP.with_name('Escape Pod Cast restore.app')
+        if staging.exists():
+            shutil.rmtree(staging)
+        shutil.copytree(snapshot / 'App.app', staging)
+        if APP.exists():
+            shutil.rmtree(APP)
+        staging.rename(APP)
+    elif APP.exists():
+        shutil.rmtree(APP)
+    if (snapshot / 'agent.plist').exists():
+        shutil.copy2(snapshot / 'agent.plist', AGENT)
+    else:
+        AGENT.unlink(missing_ok=True)
+    load_agent()
+
+
+def rollback_app():
+    previous = HOME / 'Previous Version'
+    if not (previous / 'manifest.json').exists():
+        raise RuntimeError('No previous complete version is available yet.')
+    if not json.loads((previous / 'manifest.json').read_text()).get('complete'):
+        raise RuntimeError('No previous complete version is available yet.')
+    current = HOME / 'Rollback Safety'
+    if current.exists():
+        shutil.rmtree(current)
+    with publisher.locked():
+        snapshot_version(current)
+        try:
+            restore_snapshot(previous)
+        except Exception:
+            restore_snapshot(current)
+            raise
+        shutil.rmtree(previous)
+        current.rename(previous)
+
+
 def install_app(config):
     HOME.mkdir(parents=True, exist_ok=True)
     (HOME / 'Drop Audio Here').mkdir(exist_ok=True)
@@ -284,23 +354,6 @@ def install_app(config):
     subprocess.run(['/usr/bin/osacompile', '-o', str(staging), str(source)], check=True)
     # Compile first, then replace complete runtime files and preserve the old
     # app until the new bundle has been moved into place successfully.
-    for filename in ('escape_pod_cast.py', 'app.py', 'install.py'):
-        temporary = HOME / (filename + '.new')
-        shutil.copy2(HERE / filename, temporary)
-        os.replace(temporary, HOME / filename)
-    previous = APP.with_name('Escape Pod Cast previous.app')
-    if previous.exists():
-        shutil.rmtree(previous)
-    if APP.exists():
-        APP.rename(previous)
-    try:
-        staging.rename(APP)
-    except OSError:
-        if previous.exists():
-            previous.rename(APP)
-        raise
-    if previous.exists():
-        shutil.rmtree(previous)
     definition = {
         'Label': 'com.escapepodcast.publisher',
         'ProgramArguments': [sys.executable, str(script), '--maintain'],
@@ -310,16 +363,45 @@ def install_app(config):
         'EnvironmentVariables': {'PATH': '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'},
     }
     AGENT.parent.mkdir(parents=True, exist_ok=True)
-    AGENT.write_bytes(plistlib.dumps(definition))
-    target = 'gui/%s' % os.getuid()
-    subprocess.run(['/bin/launchctl', 'bootout', target, str(AGENT)],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(['/bin/launchctl', 'bootstrap', target, str(AGENT)], check=True)
+    backup = HOME / 'Installing Backup'
+    previous = HOME / 'Previous Version'
+    with publisher.locked():
+        if backup.exists():
+            raise RuntimeError('An interrupted update backup exists. Restore it before installing again.')
+        snapshot_version(backup)
+        try:
+            for filename in RUNTIME_FILES:
+                compile((HERE / filename).read_text(), filename, 'exec')
+                temporary = HOME / (filename + '.new')
+                shutil.copy2(HERE / filename, temporary)
+                os.replace(temporary, HOME / filename)
+            if APP.exists():
+                shutil.rmtree(APP)
+            staging.rename(APP)
+            AGENT.write_bytes(plistlib.dumps(definition))
+            load_agent()
+        except Exception:
+            restore_snapshot(backup)
+            shutil.rmtree(backup)
+            raise
+        if previous.exists():
+            shutil.rmtree(previous)
+        backup.rename(previous)
 
 
 def main(result_file=None):
     if sys.platform != 'darwin':
         raise RuntimeError('Open START-HERE.command on your Mac.')
+    interrupted = HOME / 'Installing Backup'
+    if (interrupted / 'manifest.json').exists():
+        dialog('An interrupted update has a complete recovery snapshot. Restore it before continuing?',
+               buttons=('Cancel', 'Restore'))
+        with publisher.locked():
+            restore_snapshot(interrupted)
+            shutil.rmtree(interrupted)
+    elif interrupted.exists():
+        # Snapshot preparation stopped before any runtime files were replaced.
+        shutil.rmtree(interrupted)
     choose_window_runtime()
     config = None
     if publisher.CONFIG.exists():
@@ -372,7 +454,12 @@ if __name__ == '__main__':
     try:
         parser = argparse.ArgumentParser(description=__doc__)
         parser.add_argument('--result-file', type=Path)
-        main(parser.parse_args().result_file)
+        parser.add_argument('--rollback', action='store_true')
+        args = parser.parse_args()
+        if args.rollback:
+            rollback_app()
+        else:
+            main(args.result_file)
     except Cancelled:
         sys.exit(0)
     except (RuntimeError, OSError, ValueError, subprocess.CalledProcessError) as exc:
