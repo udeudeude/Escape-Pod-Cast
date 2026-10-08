@@ -110,7 +110,7 @@ def redact(value):
     value = re.sub(r'\b(?:github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]+)\b', '<TOKEN REDACTED>', str(value))
     value = re.sub(r'(?i)(authorization["\s:=]+(?:bearer\s+)?)[^\s,\"\}]+', r'\1<REDACTED>', value)
     value = re.sub(r'/feeds/[0-9a-f]{48}/', '/feeds/<ADDRESS REDACTED>/', value)
-    return value.replace(str(HOME), '<APP DATA>').replace(str(Path.home()), '<HOME>')
+    return value.replace(str(HOME.resolve()), '<APP DATA>').replace(str(HOME), '<APP DATA>').replace(str(Path.home()), '<HOME>')
 
 
 def diagnostic_report():
@@ -436,7 +436,7 @@ def cancel_job(job_id):
             raise Failure('Only waiting or failed items can be removed from the queue.')
         source = Path(job['source'])
         message = 'Removed from the queue. No original or published audio was deleted.'
-        if job.get('origin') == 'folder' and source.parent == HOME / 'Drop Audio Here' and source.exists():
+        if job.get('origin') == 'folder' and source.parent.resolve() == (HOME / 'Drop Audio Here').resolve() and source.exists():
             hold = source.parent / 'Not Published'
             hold.mkdir(exist_ok=True)
             destination = hold / source.name
@@ -462,7 +462,7 @@ def archive_source(path):
 @contextlib.contextmanager
 def record_folder_file(path):
     global CURRENT_JOB
-    source = str(path.absolute())
+    source = str(path.resolve())
     previous = next((job for job in reversed(list_jobs()) if job.get('source') == source and
                      job.get('origin') == 'folder' and job['state'] in ('failed', 'queued')), None)
     job = previous or create_job('file', source)
@@ -511,7 +511,7 @@ def perform_job(job):
             publish_youtube(client, release, link_file(source), now, prompt=job.get('origin') != 'folder')
         else:
             publish(client, release, source, now)
-        if job.get('origin') == 'folder' and source.parent == HOME / 'Drop Audio Here':
+        if job.get('origin') == 'folder' and source.parent.resolve() == (HOME / 'Drop Audio Here').resolve():
             job_progress('Original archived', original_path=str(archive_source(source)))
     return 'Audio uploaded and feed committed. Waiting for GitHub Pages; Apple controls subsequent downloads.'
 

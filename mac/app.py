@@ -110,11 +110,21 @@ class TapeDeck:
 
     def sync(self, entries):
         """Keep focusable buttons and scrolling when queue status changes."""
+        current = self.canvas.canvasy(0)
+        old = list(self.items)
+        anchor = None
+        if old and current > 1:
+            index = min(len(old)-1, max(0, int(current//94)))
+            anchor = (old[index], current-index*94)
         wanted = {entry['id'] for entry in entries}
         self.delete(*(key for key in self.items if key not in wanted))
         self.items = {entry['id']: {'text': entry['label'], 'values': [entry['status']],
                                    'number': entry['number']} for entry in entries}
         self.draw()
+        if anchor and anchor[0] in self.items:
+            position = list(self.items).index(anchor[0])*94 + anchor[1]
+            total = max(self.canvas.winfo_height(), len(self.items)*94+12)
+            self.canvas.yview_moveto(position / max(1, total))
 
     def selection_set(self, iid):
         self.selected = iid
@@ -141,6 +151,7 @@ class TapeDeck:
 
     def draw(self):
         c = self.canvas
+        focused = next((key for key, button in self.buttons.items() if button.focus_get() is button), None)
         offset = c.yview()[0]
         c.delete('all')
         width = max(400, c.winfo_width())
@@ -169,6 +180,7 @@ class TapeDeck:
                                         font=('Helvetica', 12, 'bold'), padx=4, takefocus=True)
                 button.bind('<Up>', lambda event, key=iid: self.move(key, -1))
                 button.bind('<Down>', lambda event, key=iid: self.move(key, 1))
+                button.bind('<Return>', lambda event, key=iid: (self.choose(key), 'break')[1])
                 button.bind('<MouseWheel>', self.wheel)
                 self.buttons[iid] = button
             # Long filenames remain available in the selectable detail text.
@@ -185,6 +197,8 @@ class TapeDeck:
             c.create_text(width-73, y+70, text='SIDE A', fill=INK, font=('Courier', 9))
         c.configure(scrollregion=(0, 0, width, max(c.winfo_height(), len(self.items)*94+12)), yscrollincrement=24)
         c.yview_moveto(offset)
+        if focused in self.buttons:
+            self.buttons[focused].focus_set()
 
 
 def drop_inputs(values):

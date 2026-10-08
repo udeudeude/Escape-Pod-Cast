@@ -21,7 +21,7 @@ import install
 class AppFixture(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.home = Path(self.temp.name)
+        self.home = Path(self.temp.name).resolve()
         for mock in (patch.object(p, 'HOME', self.home),
                      patch.object(p, 'CONFIG', self.home / 'config.json')):
             mock.start()

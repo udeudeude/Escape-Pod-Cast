@@ -172,6 +172,31 @@ class ReliabilityTests(unittest.TestCase):
         bridge.event('click', None)
         self.assertEqual(bridge.window.drop_messages.get_nowait(), ('choose', None))
 
+    def test_symlinked_support_folder_still_archives_and_cancels_original(self):
+        support = self.home/'real-support'
+        support.mkdir()
+        alias = self.home/'alias-support'
+        alias.symlink_to(support, target_is_directory=True)
+        inbox = alias/'Drop Audio Here'
+        inbox.mkdir()
+        source = inbox/'track.mp3'
+        source.write_bytes(b'original')
+        with patch.object(p, 'HOME', alias), patch.object(p, 'CONFIG', alias/'config.json'):
+            p.CONFIG.write_text(json.dumps({'repo': 'owner/repo'}))
+            job = p.create_job('file', source)
+            job['origin'] = 'folder'
+            p.save_job(job)
+            with patch.object(p, 'publish'), patch.object(p, 'GitHub'), patch.object(p, 'get_token', return_value='test'):
+                p.run_job(job['id'])
+            self.assertTrue((inbox/'Published/track.mp3').exists())
+            self.assertFalse(source.exists())
+            source.write_bytes(b'second original')
+            waiting = p.create_job('file', source)
+            waiting['origin'] = 'folder'
+            p.save_job(waiting)
+            p.cancel_job(waiting['id'])
+            self.assertTrue((inbox/'Not Published/track.mp3').exists())
+
 
 class InstallerTransactionTests(unittest.TestCase):
     def test_failed_runtime_replace_restores_app_scripts_and_agent(self):

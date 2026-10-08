@@ -191,6 +191,12 @@ class Response:
 
 
 class DeliveryTests(unittest.TestCase):
+    def setUp(self):
+        # This class exercises urllib transport; Mac curl has its own test suite.
+        transport = patch.object(p.sys, 'platform', 'linux')
+        transport.start()
+        self.addCleanup(transport.stop)
+
     def test_real_partial_response_required(self):
         head = Response(200, {'Content-Length': '20'})
         partial = Response(206, {'Content-Range': 'bytes 0-0/20'})
