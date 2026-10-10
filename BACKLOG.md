@@ -1,6 +1,8 @@
 # Escape Pod Cast development status
 
-Updated for 0.7.0. The supported targets remain macOS 11.7.11 and 15.x, Intel and Apple Silicon.
+Updated for 0.7.1. The supported targets remain macOS 11.7.11 and 15.x, Intel and Apple Silicon.
+
+0.7.1 adds measured phase progress bars/percentages, cooperative abort with child-process-group shutdown and temporary-directory cleanup, retry of aborted imports, and confirmed abort-and-delete/import deletion. The final feed transaction is protected against interruption. A completed orphan upload can remain until the regular managed retention cleanup.
 
 ## Implemented in this development pass
 

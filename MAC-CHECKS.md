@@ -10,6 +10,7 @@ Use an interactive desktop session on Big Sur 11.7.11 and a 15.x Mac. Keep origi
 6. Confirm a published deletion explicitly; verify feed removal before GitHub audio deletion and preservation of the original. Check rollback restores all three runtime files, the app and agent together.
 7. Enable reduced motion: lamp should remain steady and hatch motion should stop. Repeat browser/Finder drags many times, including cancelled and invalid drags; there must be no Python/Tk abort.
 8. Export diagnostics and inspect for tokens, feed addresses and home paths. Log messages can still contain titles: review before sharing.
+9. Import a large file and long public YouTube video. Confirm copying/download/upload percentages advance separately and reset on phase changes; conversion/feed checks must not fabricate percentages. Abort during download, conversion and upload. Confirm work stops, temporary disk space is released, originals remain, Retry works, and Delete removes the import. Repeat with a watched-folder original: it must move to Not Published and not be re-enqueued. Delete a running import; it must disappear after cleanup. Try Abort at the final feed update: it should be disabled or explain that the transaction must finish first.
 
 For developer GUI checks in an interactive Mac desktop session:
 

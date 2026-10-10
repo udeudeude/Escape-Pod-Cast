@@ -6,6 +6,9 @@ import plistlib
 import subprocess
 import sys
 import tempfile
+import threading
+import time
+import os
 import unittest
 from unittest.mock import Mock, patch
 import xml.etree.ElementTree as ET
@@ -28,6 +31,91 @@ class ReliabilityTests(unittest.TestCase):
         self.addCleanup(lambda: setattr(p, 'CURRENT_JOB', None))
         self.audio = self.home/'🎧 Source + track.mp3'
         self.audio.write_bytes(b'original audio')
+
+    def test_transfer_percent_is_phase_scoped_and_parses_both_tools(self):
+        job = p.create_job('file', self.audio)
+        p.CURRENT_JOB = job
+        p.job_progress('Downloading YouTube audio', percent=0)
+        p.parse_transfer_progress('EPC_PROGRESS  42.3%\n', 'youtube')
+        self.assertEqual(p.load_job(job['id'])['percent'], 42.3)
+        p.job_progress('Converting audio')
+        self.assertIsNone(p.load_job(job['id'])['percent'])
+        p.job_progress('Uploading audio', percent=0)
+        p.parse_transfer_progress(' 50 100M 0 0 50 50M 0 1024k 0:01:40 0:00:50 0:00:50 1024k\r', 'curl')
+        self.assertEqual(p.load_job(job['id'])['percent'], 50)
+        p.publication_boundary()
+        with self.assertRaisesRegex(p.Failure, 'finishing'):
+            job['state'] = 'running'
+            p.save_job(job)
+            p.request_abort(job['id'])
+
+    def test_abort_real_child_cleans_temporary_download_and_can_delete_record(self):
+        for delete in (False, True):
+            with self.subTest(delete=delete):
+                job = p.create_job('file', self.audio)
+                ready = threading.Event()
+                temporary = []
+                errors = []
+                def perform(current):
+                    with tempfile.TemporaryDirectory(dir=self.home) as folder:
+                        directory = Path(folder)
+                        temporary.append(directory)
+                        pid_file = directory/'pid'
+                        ready.set()
+                        code = 'import os,sys,time;from pathlib import Path;Path(sys.argv[1]).write_text(str(os.getpid()));time.sleep(30)'
+                        p.process_command([sys.executable, '-c', code, str(pid_file)], capture_output=True,
+                                          text=True, timeout=5)
+                def abort():
+                    try:
+                        self.assertTrue(ready.wait(5))
+                        deadline = time.monotonic()+5
+                        while not (temporary[0]/'pid').exists() and time.monotonic() < deadline:
+                            time.sleep(.01)
+                        pid = int((temporary[0]/'pid').read_text())
+                        p.request_abort(job['id'], delete=delete)
+                        temporary.append(pid)
+                    except Exception as exc:
+                        errors.append(exc)
+                thread = threading.Thread(target=abort)
+                thread.start()
+                with patch.object(p, 'perform_job', side_effect=perform):
+                    p.run_job(job['id'])
+                thread.join(6)
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(errors, [])
+                self.assertFalse(temporary[0].exists())
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(temporary[1], 0)
+                self.assertEqual(self.audio.read_bytes(), b'original audio')
+                if delete:
+                    self.assertFalse(p.job_path(job['id']).exists())
+                else:
+                    self.assertEqual(p.load_job(job['id'])['state'], 'cancelled')
+                    p.retry_job(job['id'])
+                    self.assertEqual(p.load_job(job['id'])['state'], 'queued')
+                    p.cancel_job(job['id'], delete=True)
+
+    def test_monitored_process_handles_stdin_and_timeout(self):
+        p.CURRENT_JOB = p.create_job('file', self.audio)
+        result = p.process_command([sys.executable, '-c', 'import sys,time;v=sys.stdin.read();time.sleep(.3);print(v)'],
+                                   input='configured input', capture_output=True, text=True, timeout=3)
+        self.assertEqual(result.stdout.strip(), 'configured input')
+        with self.assertRaises(subprocess.TimeoutExpired):
+            p.process_command([sys.executable, '-c', 'import time;time.sleep(30)'],
+                              capture_output=True, text=True, timeout=.1)
+
+    def test_delete_watched_import_preserves_source_and_prevents_rescan(self):
+        inbox = self.home/'Drop Audio Here'
+        inbox.mkdir()
+        source = inbox/'track.mp3'
+        source.write_bytes(b'original')
+        job = p.create_job('file', source)
+        job['origin'] = 'folder'
+        p.save_job(job)
+        p.cancel_job(job['id'], delete=True)
+        self.assertFalse(p.job_path(job['id']).exists())
+        self.assertFalse(source.exists())
+        self.assertEqual((inbox/'Not Published/track.mp3').read_bytes(), b'original')
 
     def test_concurrent_intake_and_link_forms_share_one_waiting_job(self):
         job = p.create_job('file', self.audio)

@@ -127,13 +127,13 @@ class TransactionTests(unittest.TestCase):
         self.assertEqual(self.client.writes, 0)
 
     def test_changed_file_rejected_before_upload(self):
-        original_copy = shutil.copyfile
+        original_copy = p.copy_audio
 
         def changing(source, target):
             original_copy(source, target)
             source.write_bytes(b'changed source with different size')
 
-        with patch.object(p.shutil, 'copyfile', side_effect=changing):
+        with patch.object(p, 'copy_audio', side_effect=changing):
             with self.assertRaises(p.Failure):
                 p.publish(self.client, {}, self.source, NOW)
         self.assertEqual(self.client.uploads, 0)

@@ -16,11 +16,13 @@ from pathlib import Path
 import plistlib
 import re
 import secrets
+import signal
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -55,6 +57,98 @@ class Failure(RuntimeError):
 
 class NetworkFailure(Failure):
     pass
+
+
+class Aborted(Failure):
+    pass
+
+
+def abort_path(job_id):
+    return job_path(job_id).with_suffix('.abort')
+
+
+def check_abort():
+    if CURRENT_JOB and CURRENT_JOB.get('abortable', True) and abort_path(CURRENT_JOB['id']).exists():
+        raise Aborted('Aborted. Your original audio is kept.')
+
+
+def request_abort(job_id, delete=False):
+    # Serialize the request with the worker's final publication boundary.
+    with intake_lock():
+        job = load_job(job_id)
+        if job['state'] != 'running':
+            raise Failure('This item is no longer running. Select Delete to remove it.')
+        if not job.get('abortable', True):
+            raise Failure('The feed update is finishing. Let it finish, then delete the episode.')
+        abort_path(job_id).write_text('delete' if delete else 'abort')
+
+
+def publication_boundary():
+    if CURRENT_JOB is None:
+        return
+    with intake_lock():
+        check_abort()
+        job_progress('Adding the episode to your podcast', abortable=False)
+
+
+def process_command(args, progress_file=None, progress_kind=None, **options):
+    """Interrupt only our child process group, never the publisher mid-transaction."""
+    if CURRENT_JOB is None:
+        return subprocess.run(args, **options)
+    check_abort()
+    timeout = options.pop('timeout', None)
+    input_value = options.pop('input', None)
+    capture = options.pop('capture_output', False)
+    if capture:
+        options.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if input_value is not None:
+        options['stdin'] = subprocess.PIPE
+    started = time.monotonic()
+    child = subprocess.Popen(args, start_new_session=True, **options)
+    try:
+        while True:
+            check_abort()
+            if timeout is not None and time.monotonic() - started > timeout:
+                raise subprocess.TimeoutExpired(args, timeout)
+            if progress_file and progress_file.exists():
+                with progress_file.open('rb') as stream:
+                    stream.seek(max(0, progress_file.stat().st_size - 4096))
+                    parse_transfer_progress(stream.read().decode('utf-8', errors='replace'), progress_kind)
+            try:
+                stdout, stderr = child.communicate(input=input_value, timeout=0.2)
+                return subprocess.CompletedProcess(args, child.returncode, stdout, stderr)
+            except subprocess.TimeoutExpired:
+                input_value = None
+    finally:
+        if child.poll() is None:
+            try:
+                os.killpg(child.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                child.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                child.communicate()
+
+
+def parse_transfer_progress(text, kind):
+    if kind == 'youtube':
+        matches = re.findall(r'EPC_PROGRESS\s+([0-9.]+)%', text)
+    else:
+        # curl's standard meter: %Total Total %Received Received %Xferd Uploaded.
+        matches = []
+        for line in re.split(r'[\r\n]', text):
+            fields = line.split()
+            if len(fields) >= 12 and fields[0].isdigit() and fields[4].isdigit():
+                matches.append(fields[4])
+    if matches and CURRENT_JOB:
+        value = min(100, max(0, float(matches[-1])))
+        if CURRENT_JOB.get('percent') != value:
+            job_progress(CURRENT_JOB['stage'], percent=value)
 
 
 def queue_paused():
@@ -130,7 +224,7 @@ def diagnostic_report():
 
 def audio_command(args, timeout=900):
     try:
-        return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        return process_command(args, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         raise Failure('The audio tool timed out. Your original is kept; retry or try a compatible audio copy.') from None
 
@@ -353,6 +447,9 @@ def create_job(kind, source='', allow_invalid_link=False):
 
 def job_progress(stage, **values):
     if CURRENT_JOB is not None:
+        check_abort()
+        if stage != CURRENT_JOB.get('stage'):
+            CURRENT_JOB['percent'] = None
         CURRENT_JOB.update(stage=stage, **values)
         save_job(CURRENT_JOB)
 
@@ -419,34 +516,43 @@ def retry_job(job_id):
         if not acquired:
             raise Failure('This task is finishing. Try Retry again in a moment.')
         job = load_job(job_id)
-        if job['state'] != 'failed':
-            raise Failure('Only a failed or interrupted task needs a retry.')
+        if job['state'] not in ('failed', 'cancelled'):
+            raise Failure('Only a failed or aborted task needs a retry.')
         job.update(state='queued', stage='Waiting to retry', error='', help='', pid=None,
-                   next_attempt=None, auto_retries=0)
+                   next_attempt=None, auto_retries=0, percent=None, abortable=True)
+        abort_path(job_id).unlink(missing_ok=True)
         save_job(job)
     return job
 
 
-def cancel_job(job_id):
+def cancel_job(job_id, delete=False):
     with job_lock(job_id, blocking=False) as acquired:
         if not acquired:
             raise Failure('This item is already publishing. Let it finish; queued items can be removed.')
         job = load_job(job_id)
-        if job['state'] not in ('queued', 'failed'):
+        if job['state'] not in ('queued', 'failed', 'cancelled'):
             raise Failure('Only waiting or failed items can be removed from the queue.')
-        source = Path(job['source'])
-        message = 'Removed from the queue. No original or published audio was deleted.'
-        if job.get('origin') == 'folder' and source.parent.resolve() == (HOME / 'Drop Audio Here').resolve() and source.exists():
-            hold = source.parent / 'Not Published'
-            hold.mkdir(exist_ok=True)
-            destination = hold / source.name
-            if destination.exists():
-                destination = hold / (source.stem + '-' + job_id[:12] + source.suffix)
-            shutil.move(str(source), str(destination))
-            message = 'The original is kept in the drop folder’s Not Published subfolder. Move it back to try again.'
-        job.update(state='cancelled', stage='Removed from queue', error='', help='', pid=None,
-                   message=message)
-        save_job(job)
+        finish_abort(job)
+        if delete:
+            job_path(job_id).unlink(missing_ok=True)
+
+
+def finish_abort(job):
+    job_id = job['id']
+    source = Path(job['source'])
+    message = 'Aborted / removed from queue. Temporary work is discarded; your original audio is kept.'
+    if job.get('origin') == 'folder' and source.parent.resolve() == (HOME / 'Drop Audio Here').resolve() and source.exists():
+        hold = source.parent / 'Not Published'
+        hold.mkdir(exist_ok=True)
+        destination = hold / source.name
+        if destination.exists():
+            destination = hold / (source.stem + '-' + job_id[:12] + source.suffix)
+        shutil.move(str(source), str(destination))
+        job['source'] = str(destination.resolve())
+        message = 'The original is kept in the drop folder’s Not Published subfolder. Retry or move it back to try again.'
+    job.update(state='cancelled', stage='Aborted / removed', error='', help='', pid=None,
+               message=message, percent=None)
+    save_job(job)
 
 
 def archive_source(path):
@@ -527,6 +633,7 @@ def run_job(job_id, blocking=True):
             if not ready_job(job):
                 return
             job.update(state='running', pid=os.getpid(), stage='Starting', error='', help='',
+                       abortable=True, percent=None,
                        started=dt.datetime.now(dt.timezone.utc).isoformat(),
                        attempts=job.get('attempts', 0) + 1)
             CURRENT_JOB = job
@@ -536,12 +643,21 @@ def run_job(job_id, blocking=True):
                 job.update(state='done', stage='Ready' if job['kind'] in ('tools', 'check') else
                            'Feed updating' if job.get('publication') == 'feed_pending' else 'Published',
                            message=result, pid=None)
+            except Aborted:
+                finish_abort(job)
             except (Failure, OSError, ValueError, TypeError, KeyError, ET.ParseError) as exc:
                 message = str(exc)
                 print('Failed: %s: %s' % (job['label'], message), file=sys.stderr, flush=True)
-                fail_job(job, exc)
+                if job.get('abortable', True) and abort_path(job_id).exists():
+                    finish_abort(job)
+                else:
+                    fail_job(job, exc)
             finally:
                 save_job(job)
+                marker = abort_path(job_id)
+                if job['state'] == 'cancelled' and marker.exists() and marker.read_text() == 'delete':
+                    job_path(job_id).unlink(missing_ok=True)
+                marker.unlink(missing_ok=True)
                 CURRENT_JOB = None
     confirm_publications()
 
@@ -577,7 +693,14 @@ def mac_transfer(url, method='GET', headers=None, data=None, upload=None,
             args.extend(['--upload-file', str(upload)])
         if max_size is not None:
             args.extend(['--max-filesize', str(max_size)])
-        result = subprocess.run(args, input=config, capture_output=True, text=True)
+        if upload is not None and CURRENT_JOB is not None:
+            args.remove('--silent')
+            meter = folder / 'progress'
+            with meter.open('w') as progress:
+                result = process_command(args, input=config, stdout=subprocess.PIPE, stderr=progress,
+                                         text=True, progress_file=meter, progress_kind='curl')
+        else:
+            result = process_command(args, input=config, capture_output=True, text=True)
         if result.returncode:
             messages = {
                 5: 'The configured network proxy could not be found.',
@@ -668,7 +791,7 @@ class GitHub:
             page += 1
 
     def upload(self, release, path, name, mime, label=None):
-        job_progress('Uploading audio — slow connections may take a while')
+        job_progress('Uploading audio', percent=0)
         # Stream from disk; do not hold a potentially 2 GiB episode in memory.
         url = urllib.parse.urlsplit(release['upload_url'].split('{')[0])
         if url.scheme != 'https' or url.hostname != 'uploads.github.com':
@@ -886,8 +1009,23 @@ def fingerprint(path):
     digest = hashlib.sha256()
     with path.open('rb') as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            check_abort()
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def copy_audio(source, target):
+    size = source.stat().st_size
+    job_progress('Copying audio', percent=0)
+    copied = 0
+    with source.open('rb') as original, target.open('wb') as output:
+        for chunk in iter(lambda: original.read(1024 * 1024), b''):
+            check_abort()
+            output.write(chunk)
+            copied += len(chunk)
+            percent = min(100, int(copied * 100 / max(1, size)))
+            if (CURRENT_JOB or {}).get('percent') != percent:
+                job_progress('Copying audio', percent=percent)
 
 
 def verify_enclosure(url, size):
@@ -924,7 +1062,7 @@ def publish(client, release, source, now, title=None, identity=None):
         # a streaming upload. Fail if a copy into the watched folder is active.
         before = source.stat()
         snapshot = Path(directory) / ('source' + source.suffix.lower())
-        shutil.copyfile(source, snapshot)
+        copy_audio(source, snapshot)
         after = source.stat()
         if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
             raise Failure('File is still changing. Retry after copying finishes.')
@@ -953,7 +1091,7 @@ def publish(client, release, source, now, title=None, identity=None):
         verify_enclosure(asset['browser_download_url'], asset['size'])
         # Read after upload. SHA-conditional write fails safely if another publisher
         # changes the feed. Retrying reuses the already completed audio upload.
-        job_progress('Adding the episode to your podcast')
+        publication_boundary()
         root, sha = client.read_feed()
         if add_episode(root, asset, title or source.stem, now, (CURRENT_JOB or {}).get('description')):
             client.write_feed(root, sha)
@@ -1027,7 +1165,7 @@ def download_tool(url, destination, digest=None, limit=150 * 1024 ** 2):
                            'https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest')):
         raise Failure('Unexpected helper download address.')
     job_progress('Downloading YouTube helpers — this may take a few minutes')
-    result = subprocess.run(['/usr/bin/curl', '-q', '--fail', '--silent', '--show-error',
+    result = process_command(['/usr/bin/curl', '-q', '--fail', '--silent', '--show-error',
                              '--location', '--max-redirs', '5', '--proto', '=https',
                              '--proto-redir', '=https', '--connect-timeout', '15',
                              '--max-time', '900', '--retry', '2', '--max-filesize', str(limit),
@@ -1184,12 +1322,14 @@ def install_youtube_tools():
 
 
 def download_youtube(url, video, directory, tools):
-    job_progress('Getting YouTube audio — downloads may take a while')
+    job_progress('Downloading YouTube audio', percent=0)
     downloader, node = tools
     output = directory / 'download.log'
     args = [str(downloader), '--ignore-config', '--no-plugin-dirs', '--no-js-runtimes',
             '--js-runtimes', 'node:' + str(node), '--no-remote-components',
-            '--no-playlist', '--no-progress', '--no-colors', '--socket-timeout', '20',
+            '--no-playlist', '--newline', '--progress', '--progress-delta', '0.5',
+            '--progress-template', 'download:EPC_PROGRESS %(progress._percent_str)s',
+            '--no-colors', '--socket-timeout', '20',
             '--retries', '3', '--fragment-retries', '3', '--abort-on-unavailable-fragments',
             '--max-filesize', str(2 * 1024 ** 3 - 1), '--match-filters', '!is_live',
             '--format', 'bestaudio[ext=m4a]', '--fixup', 'never', '--write-info-json',
@@ -1197,8 +1337,9 @@ def download_youtube(url, video, directory, tools):
     print('Getting YouTube audio: ' + url, flush=True)
     try:
         with output.open('w') as log:
-            result = subprocess.run(args, stdout=log, stderr=subprocess.STDOUT,
-                                    timeout=7200, env=tool_environment())
+            result = process_command(args, stdout=log, stderr=subprocess.STDOUT,
+                                     timeout=7200, env=tool_environment(),
+                                     progress_file=output, progress_kind='youtube')
     except subprocess.TimeoutExpired:
         raise Failure('The YouTube download timed out. Check your connection and retry.') from None
     if result.returncode:
@@ -1244,6 +1385,7 @@ def publish_youtube(client, release, value, now, prompt=True):
         # A failed feed update can be retried without redownloading/reuploading audio.
         job_progress('Reusing your completed audio upload', label=existing.get('label') or 'YouTube · ' + video)
         verify_enclosure(existing['browser_download_url'], existing['size'])
+        publication_boundary()
         root, sha = client.read_feed()
         if add_episode(root, existing, (CURRENT_JOB or {}).get('title') or existing.get('label') or 'YouTube ' + video,
                        now, (CURRENT_JOB or {}).get('description')):

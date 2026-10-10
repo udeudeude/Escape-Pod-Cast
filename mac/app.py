@@ -19,7 +19,7 @@ import escape_pod_cast as p
 
 HERE = Path(__file__).resolve().parent
 SOURCE_REPO = 'udeudeude/Escape-Pod-Cast'
-APP_VERSION = '0.7.0'
+APP_VERSION = '0.7.1'
 UPDATE_FILES = ('mac/escape_pod_cast.py', 'mac/app.py', 'mac/install.py')
 CREAM, PANEL, INK, ORANGE = '#f7f2e8', '#fffcf6', '#172e3e', '#aa4824'
 AUDIO_TYPES = ('.mp3', '.m4a', '.aac', '.wav', '.flac', '.ogg', '.opus', '.aif', '.aiff', '.mp4')
@@ -119,7 +119,8 @@ class TapeDeck:
         wanted = {entry['id'] for entry in entries}
         self.delete(*(key for key in self.items if key not in wanted))
         self.items = {entry['id']: {'text': entry['label'], 'values': [entry['status']],
-                                   'number': entry['number']} for entry in entries}
+                                   'number': entry['number'],
+                                   'percent': entry.get('percent') if entry.get('state') == 'running' else None} for entry in entries}
         self.draw()
         if anchor and anchor[0] in self.items:
             position = list(self.items).index(anchor[0])*94 + anchor[1]
@@ -190,6 +191,10 @@ class TapeDeck:
             button.configure(text=title + '\n' + item['values'][0],
                              background='#f3dfb9' if iid == self.selected else PANEL)
             c.create_window(28, y+23, window=button, anchor='nw', width=width-148, height=53)
+            if item.get('percent') is not None:
+                c.create_rectangle(30, y+77, width-124, y+80, fill='#bcb39f', outline='')
+                c.create_rectangle(30, y+77, 30+(width-154)*item['percent']/100, y+80,
+                                   fill=ORANGE, outline='')
             for x in (width-98, width-48):
                 c.create_oval(x-14, y+30, x+14, y+58, outline=INK, width=2)
                 c.create_oval(x-4, y+40, x+4, y+48, fill=INK, outline='')
@@ -586,7 +591,7 @@ class Window:
         self.stage_label = ttk.Label(detail, textvariable=self.stage, font=('Helvetica', 14, 'bold'), wraplength=740)
         self.stage_label.grid(sticky='w')
         self.progress = ttk.Progressbar(detail, mode='indeterminate')
-        # Kept as the task-state controller; the radio lamp replaces the stock bar.
+        self.progress.grid(row=1, sticky='ew', pady=(6, 6))
         self.explanation = tk.StringVar(value='Progress and any retry instructions appear here. Your originals stay on your Mac.')
         explanation_frame = ttk.Frame(detail)
         explanation_frame.grid(row=2, sticky='ew')
@@ -607,7 +612,7 @@ class Window:
         controls.grid(row=4, sticky='ew', pady=(6, 0))
         for text, command in (('Edit…', self.edit_episode), ('Preview', self.preview_episode),
                               ('Earlier', lambda: self.move_selected(-1)), ('Later', lambda: self.move_selected(1)),
-                              ('Retry all', self.retry_all), ('Delete episode…', self.delete_selected)):
+                              ('Retry all', self.retry_all), ('Delete…', self.delete_selected)):
             ttk.Button(controls, text=text, command=command).pack(side='left', padx=(0, 4))
         bottom = ttk.Frame(body)
         bottom.grid(row=7, sticky='ew')
@@ -842,7 +847,22 @@ class Window:
 
     def delete_selected(self):
         job = self.jobs.get(self.selected)
-        if not job or job['state'] != 'done' or not job.get('asset_id'):
+        if not job:
+            return
+        if job['state'] in ('queued', 'running', 'failed', 'cancelled'):
+            if not self.dialogs['message'].askyesno('Delete import?',
+                    'Remove “' + job['label'] + '” from the app? Running work will be aborted and temporary '
+                    'downloads discarded. Your original audio is kept.', parent=self.root):
+                return
+            try:
+                if job['state'] == 'running':
+                    p.request_abort(job['id'], delete=True)
+                else:
+                    p.cancel_job(job['id'], delete=True)
+            except (p.Failure, OSError, ValueError) as exc:
+                self.show_error(exc)
+            return
+        if not job.get('asset_id'):
             self.show_error('Select an episode published by this version of the app.')
             return
         if not self.dialogs['message'].askyesno('Delete published episode?',
@@ -881,6 +901,13 @@ class Window:
     def render_detail(self):
         job = self.jobs.get(self.selected)
         if job is None:
+            self.progress.stop()
+            self.progress.configure(mode='determinate', value=0)
+            self.pulsing = False
+            self.stage.set('Add a file or paste a video link to begin.')
+            self.explanation.set('Select an item to see its progress and controls. Your originals stay on your Mac.')
+            self.retry.configure(state='disabled')
+            self.remove.configure(state='disabled')
             return
         stage = job.get('stage', 'Waiting')
         state = job['state']
@@ -893,8 +920,15 @@ class Window:
             except ValueError:
                 pass
         self.stage.set(stage)
-        self.retry.configure(state='normal' if state == 'failed' else 'disabled')
-        self.remove.configure(state='normal' if state in ('queued', 'failed') else 'disabled')
+        percent = job.get('percent') if state == 'running' else None
+        if percent is not None:
+            self.stage.set(stage + ' · %.0f%%' % percent)
+        if state == 'running' and p.abort_path(job['id']).exists():
+            self.stage.set('Aborting — cleaning up temporary files…')
+        self.retry.configure(state='normal' if state in ('failed', 'cancelled') else 'disabled')
+        self.remove.configure(text='Abort' if state == 'running' else 'Remove from queue',
+                              state='normal' if state in ('queued', 'failed') or
+                              (state == 'running' and job.get('abortable', True)) else 'disabled')
         if state == 'failed':
             self.explanation.set(job['label'] + '\n' + job.get('error', '') + '\n\n' + job.get('help', ''))
         elif state in ('done', 'cancelled'):
@@ -908,7 +942,11 @@ class Window:
                                  'Keep this Mac awake and connected. You can add more items; they wait their turn. '
                                  'Closing this window does not cancel publishing.')
         active = state in ('queued', 'running')
-        if active and not self.pulsing:
+        if state == 'running' and percent is not None:
+            self.progress.stop()
+            self.progress.configure(mode='determinate', maximum=100, value=percent)
+            self.pulsing = False
+        elif active and not self.pulsing:
             self.progress.configure(mode='indeterminate')
             self.progress.start(30)
             self.pulsing = True
@@ -927,7 +965,10 @@ class Window:
     def remove_selected(self):
         if self.selected:
             try:
-                p.cancel_job(self.selected)
+                if self.jobs.get(self.selected, {}).get('state') == 'running':
+                    p.request_abort(self.selected)
+                else:
+                    p.cancel_job(self.selected)
             except (p.Failure, OSError, ValueError) as exc:
                 self.show_error(exc)
 
@@ -1101,6 +1142,8 @@ class Window:
             pass
         jobs = p.list_jobs()
         self.jobs = {job['id']: job for job in jobs}
+        if self.selected not in self.jobs:
+            self.selected = None
         queued = [job for job in jobs if job['state'] == 'queued']
         running = [job for job in jobs if job['state'] == 'running']
         failed = [job for job in jobs if job['state'] == 'failed']
@@ -1135,14 +1178,18 @@ class Window:
         # Keep active/failed items visible; cap old completed rows only.
         visible = [job for job in jobs if job['state'] not in ('done', 'cancelled')] + [job for job in jobs if job['state'] in ('done', 'cancelled')][-30:]
         visible.sort(key=lambda job: job['created'], reverse=True)
-        rows = [(job['id'], job['label'], p.episode_status(job)) for job in visible]
+        def row_status(job):
+            if job['state'] == 'running':
+                return job['stage'] + (' · %.0f%%' % job['percent'] if job.get('percent') is not None else '')
+            return p.episode_status(job)
+        rows = [(job['id'], job['label'], row_status(job)) for job in visible]
         if rows != self.last_rows:
             names = {'queued': 'Waiting', 'running': 'Publishing…', 'failed': 'Needs attention',
                      'done': 'Done', 'cancelled': 'Removed'}
             numbers = {job['id']: index+1 for index, job in enumerate(sorted(jobs, key=lambda item: item['created']))}
             entries = []
             for job in visible:
-                status = p.episode_status(job)
+                status = row_status(job)
                 entries.append(dict(job, status=status, number=numbers[job['id']]))
             self.table.sync(entries)
             self.last_rows = rows
