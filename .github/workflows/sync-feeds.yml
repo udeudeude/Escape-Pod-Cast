@@ -1,0 +1,31 @@
+name: Sync podcast feed addresses
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/feed.xml
+permissions:
+  contents: write
+concurrency:
+  group: escape-pod-publisher
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sync compatibility feed
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          feeds=list(Path('docs/feeds').glob('*/feed.xml'))
+          if len(feeds)!=1: raise SystemExit('Expected exactly one compatibility feed')
+          feeds[0].write_bytes(Path('docs/feed.xml').read_bytes())
+          PY
+          if git diff --quiet; then exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/feeds
+          git commit -m "Sync compatibility podcast feed"
+          git pull --rebase origin main
+          git push origin HEAD:main
