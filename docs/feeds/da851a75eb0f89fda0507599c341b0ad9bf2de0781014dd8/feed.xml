@@ -1,4 +1,5 @@
-<?xml version="1.0" encoding="utf-8"?><rss xmlns:ns0="http://www.itunes.com/dtds/podcast-1.0.dtd" version="2.0">
+<?xml version='1.0' encoding='utf-8'?>
+<rss xmlns:ns0="http://www.itunes.com/dtds/podcast-1.0.dtd" version="2.0">
   <channel>
     <title>Escape Pod Cast</title>
     <link>https://github.com/udeudeude/Escape-Pod-Cast</link>
@@ -8,5 +9,5 @@
     <ns0:explicit>false</ns0:explicit>
     <ns0:block>Yes</ns0:block>
     <ns0:type>episodic</ns0:type>
-  <item><title>JCarseConv2</title><description>JCarseConv2</description><guid isPermaLink="false">epc-link-50200faf10e54fc296bdddfa2e7902d5</guid><pubDate>Thu, 12 Nov 2026 20:08:08 GMT</pubDate><enclosure url="https://www.paulagordon.com/shows/carse/mp3/JCarseConv2.mp3" length="5589449" type="audio/mpeg"/></item><item><title>JCarseConv1</title><description>JCarseConv1</description><guid isPermaLink="false">epc-link-27e1ae719d634539ad89519c527725fe</guid><pubDate>Thu, 12 Nov 2026 19:07:24 GMT</pubDate><enclosure url="https://www.paulagordon.com/shows/carse/mp3/JCarseConv1.mp3" length="4442155" type="audio/mpeg"/></item><item><title>PreviewJCarse</title><description>PreviewJCarse</description><guid isPermaLink="false">epc-link-40dc9d0c11f04dbb89c269b7f3ce8716</guid><pubDate>Thu, 12 Nov 2026 18:46:36 GMT</pubDate><enclosure url="https://www.paulagordon.com/shows/carse/mp3/PreviewJCarse.mp3" length="546270" type="audio/mpeg"/></item></channel>
+  <item><title>JCarseConv3</title><description>JCarseConv3</description><guid isPermaLink="false">epc-link-540edad79e3b4ea083ec1f08b59d9f57</guid><pubDate>Thu, 12 Nov 2026 20:18:31 GMT</pubDate><enclosure url="https://www.paulagordon.com/shows/carse/mp3/JCarseConv3.mp3" length="5661547" type="audio/mpeg" /></item><item><title>JCarseConv2</title><description>JCarseConv2</description><guid isPermaLink="false">epc-link-50200faf10e54fc296bdddfa2e7902d5</guid><pubDate>Thu, 12 Nov 2026 20:08:08 GMT</pubDate><enclosure url="https://www.paulagordon.com/shows/carse/mp3/JCarseConv2.mp3" length="5589449" type="audio/mpeg" /></item><item><title>JCarseConv1</title><description>JCarseConv1</description><guid isPermaLink="false">epc-link-27e1ae719d634539ad89519c527725fe</guid><pubDate>Thu, 12 Nov 2026 19:07:24 GMT</pubDate><enclosure url="https://www.paulagordon.com/shows/carse/mp3/JCarseConv1.mp3" length="4442155" type="audio/mpeg" /></item><item><title>PreviewJCarse</title><description>PreviewJCarse</description><guid isPermaLink="false">epc-link-40dc9d0c11f04dbb89c269b7f3ce8716</guid><pubDate>Thu, 12 Nov 2026 18:46:36 GMT</pubDate><enclosure url="https://www.paulagordon.com/shows/carse/mp3/PreviewJCarse.mp3" length="546270" type="audio/mpeg" /></item></channel>
 </rss>
