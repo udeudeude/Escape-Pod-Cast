@@ -1,0 +1,31 @@
+name: Web edition regression tests
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/app/**'
+      - 'docs/feed.xml'
+      - 'docs/feeds/**'
+      - 'scripts/expire_web_episodes.py'
+      - 'scripts/import_audio_link_action.py'
+      - 'scripts/discover_audio_page.py'
+      - 'tests/test_iphone_feed_compatibility.py'
+      - 'tests/test_expire_web_episodes.py'
+      - '.github/workflows/web-tests.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run web edition tests
+        run: python -m unittest discover -s tests -p 'test_*web*.py' -v
+      - name: Check feed compatibility
+        run: python -m unittest discover -s tests -p 'test_iphone_feed_compatibility.py' -v
+      - name: Compile worker scripts
+        run: python -m py_compile scripts/expire_web_episodes.py scripts/cleanup_phone_assets.py scripts/discover_audio_page.py scripts/import_audio_link_action.py scripts/import_youtube_action.py
