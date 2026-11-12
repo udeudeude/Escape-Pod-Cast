@@ -1,0 +1,29 @@
+name: Publish selected audio batch
+on:
+  workflow_dispatch:
+    inputs:
+      batch:
+        required: true
+        type: string
+      request_id:
+        required: true
+        type: string
+permissions:
+  contents: write
+concurrency:
+  group: escape-pod-publisher
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish selected batch atomically
+        env:
+          EPISODE_BATCH: ${{ inputs.batch }}
+          BATCH_ID: ${{ inputs.request_id }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          python3 scripts/publish_batch.py
