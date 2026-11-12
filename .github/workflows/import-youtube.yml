@@ -1,0 +1,39 @@
+name: Import YouTube episode
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'Public YouTube video URL'
+        required: true
+        type: string
+      title:
+        description: 'Optional episode title'
+        required: false
+        type: string
+permissions:
+  contents: write
+concurrency:
+  group: escape-pod-publisher
+  cancel-in-progress: false
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install audio tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+          python -m pip install 'yt-dlp[default]'
+      - name: Publish audio and feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EPISODE_URL: ${{ inputs.url }}
+          EPISODE_TITLE: ${{ inputs.title }}
+        run: python scripts/import_youtube_action.py
