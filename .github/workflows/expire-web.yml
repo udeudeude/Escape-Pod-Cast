@@ -1,0 +1,26 @@
+name: Expire temporary podcast entries
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: escape-pod-publisher
+  cancel-in-progress: false
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Expire web entries
+        run: python3 scripts/expire_web_episodes.py
+      - name: Commit cleanup
+        run: |
+          if git diff --quiet && [ -z "$(git ls-files --deleted)" ]; then exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A docs/feed.xml docs/feeds docs/discovery
+          git commit -m "Expire temporary web podcast entries"
+          git pull --rebase origin main
+          git push origin HEAD:main
