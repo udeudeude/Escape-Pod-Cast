@@ -15,6 +15,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Expire web entries
         run: python3 scripts/expire_web_episodes.py
+      - name: Remove expired managed phone uploads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/cleanup_phone_assets.py
       - name: Commit cleanup
         run: |
           if git diff --quiet && [ -z "$(git ls-files --deleted)" ]; then exit 0; fi
