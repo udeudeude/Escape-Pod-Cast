@@ -1,0 +1,35 @@
+name: Diagnose YouTube extraction
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: Public YouTube video URL for metadata-only diagnosis
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install supported extractor and token provider
+        run: |
+          python -m pip install --upgrade yt-dlp bgutil-ytdlp-pot-provider
+          git clone --depth 1 --branch 2.0.2 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /tmp/bgutil
+          cd /tmp/bgutil/server
+          npm ci
+          npx tsc
+      - name: Diagnose without downloading or account credentials
+        env:
+          VIDEO_URL: ${{ inputs.url }}
+        run: |
+          node /tmp/bgutil/server/build/main.js > /tmp/bgutil.log 2>&1 &
+          python3 scripts/diagnose_youtube.py
