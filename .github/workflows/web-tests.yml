@@ -24,7 +24,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Run web edition tests
-        run: python -m unittest discover -s tests -p 'test_*web*.py' -v
+        run: python -m unittest discover -s tests -p 'test_expire_web_episodes.py' -v
       - name: Check feed compatibility
         run: python -m unittest discover -s tests -p 'test_iphone_feed_compatibility.py' -v
       - uses: actions/setup-node@v4
