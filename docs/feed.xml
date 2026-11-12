@@ -1,0 +1,13 @@
+<?xml version='1.0' encoding='utf-8'?>
+<rss xmlns:ns0="http://www.itunes.com/dtds/podcast-1.0.dtd" version="2.0">
+  <channel>
+    <title>Escape Pod Cast</title>
+    <link>https://github.com/udeudeude/Escape-Pod-Cast</link>
+    <description>Audio dropped from my Mac for personal listening. Remote audio expires after 14 days.</description>
+    <language>en-us</language>
+    <ns0:author>Escape Pod Cast</ns0:author>
+    <ns0:explicit>false</ns0:explicit>
+    <ns0:block>Yes</ns0:block>
+    <ns0:type>episodic</ns0:type>
+  <item><title>PreviewJCarse</title><description>PreviewJCarse</description><guid isPermaLink="false">epc-link-40dc9d0c11f04dbb89c269b7f3ce8716</guid><pubDate>Thu, 12 Nov 2026 18:46:36 GMT</pubDate><enclosure url="https://www.paulagordon.com/shows/carse/mp3/PreviewJCarse.mp3" length="546270" type="audio/mpeg" /></item></channel>
+</rss>
