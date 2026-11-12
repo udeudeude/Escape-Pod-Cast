@@ -31,6 +31,9 @@ def expire(path=FEED, now=None):
         tree.write(path, encoding="utf-8", xml_declaration=True)
     return removed
 
+def now_utc():
+    return dt.datetime.now(dt.timezone.utc)
+
 def main():
     removed = expire()
     compatibility = list((ROOT / "docs/feeds").glob("*/feed.xml"))
@@ -40,8 +43,13 @@ def main():
         compatibility[0].write_bytes(FEED.read_bytes())
     deleted = 0
     for file in (ROOT / "docs/discovery").glob("*.json") if (ROOT / "docs/discovery").exists() else []:
-        import time
-        if time.time() - file.stat().st_mtime > 86400 * 2:
+        import json
+        try:
+            record = json.loads(file.read_text(encoding="utf-8"))
+            created = dt.datetime.fromisoformat(record["created_at"]).astimezone(dt.timezone.utc)
+        except (KeyError, ValueError, TypeError, OSError):
+            continue
+        if now_utc() - created > dt.timedelta(days=2):
             file.unlink()
             deleted += 1
     print(f"Expired {removed} web episodes; removed {deleted} discovery results")
