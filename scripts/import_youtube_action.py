@@ -68,9 +68,10 @@ with tempfile.TemporaryDirectory() as directory:
     else:
         channel.insert(list(channel).index(first), item)
     tree.write(feed, encoding="utf-8", xml_declaration=True)
+    tree.write("docs/feed.xml", encoding="utf-8", xml_declaration=True)
     subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=True)
     subprocess.run(["git", "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"], check=True)
-    subprocess.run(["git", "add", str(feed)], check=True)
+    subprocess.run(["git", "add", str(feed), "docs/feed.xml"], check=True)
     subprocess.run(["git", "commit", "-m", "Publish imported YouTube audio"], check=True)
     subprocess.run(["git", "pull", "--rebase", "origin", "main"], check=True)
     subprocess.run(["git", "push", "origin", "HEAD:main"], check=True)
