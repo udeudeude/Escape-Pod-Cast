@@ -27,5 +27,10 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_*web*.py' -v
       - name: Check feed compatibility
         run: python -m unittest discover -s tests -p 'test_iphone_feed_compatibility.py' -v
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check upload relay syntax
+        run: node --check upload-service/server.js
       - name: Compile worker scripts
         run: python -m py_compile scripts/expire_web_episodes.py scripts/cleanup_phone_assets.py scripts/discover_audio_page.py scripts/import_audio_link_action.py scripts/import_youtube_action.py
