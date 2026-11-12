@@ -60,6 +60,11 @@ tree = ET.parse(feed)
 channel = tree.getroot().find("channel")
 if channel is None:
     raise ValueError("Invalid feed: no channel")
+for existing in channel.findall("item"):
+    enclosure = existing.find("enclosure")
+    if enclosure is not None and enclosure.get("url") == final_url:
+        print("Already published: " + final_url)
+        raise SystemExit(0)
 title = (title or urllib.parse.unquote(pathlib.PurePosixPath(parsed.path).stem).replace("_", " ").replace("-", " ") or "Audio episode")[:180]
 item = ET.Element("item")
 ET.SubElement(item, "title").text = title
