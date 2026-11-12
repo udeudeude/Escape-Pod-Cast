@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1400" viewBox="0 0 1400 1400" role="img" aria-labelledby="title desc">
+<title id="title">Escape Pod Cast</title><desc id="desc">A midnight-blue radio transmission emblem: a small escape capsule rises through concentric radio waves above the title Escape Pod Cast.</desc>
+<rect width="1400" height="1400" fill="#142232"/>
+<rect x="50" y="50" width="1300" height="1300" rx="52" fill="none" stroke="#D9B47B" stroke-width="5"/>
+<rect x="80" y="80" width="1240" height="1240" rx="32" fill="none" stroke="#50677A" stroke-width="2"/>
+<g fill="none" stroke="#67899B" stroke-width="3" opacity=".6">
+<circle cx="700" cy="504" r="150"/><circle cx="700" cy="504" r="218"/><circle cx="700" cy="504" r="286"/><circle cx="700" cy="504" r="354"/>
+</g>
+<g fill="none" stroke="#D9B47B" stroke-width="9" stroke-linecap="round"><path d="M700 184V128"/><path d="M525 237l-37-42"/><path d="M875 237l37-42"/></g>
+<g transform="translate(700 496)">
+<path d="M0-191C-99-131-137-22-122 81L-64 151H64L122 81C137-22 99-131 0-191Z" fill="#E9D8B6" stroke="#D9B47B" stroke-width="8"/>
+<path d="M0-191C-99-131-137-22-122 81L-64 151H0Z" fill="#C1AD89" opacity=".45"/>
+<circle cy="-35" r="63" fill="#142232" stroke="#D9B47B" stroke-width="11"/>
+<circle cy="-35" r="38" fill="#3D6377"/>
+<path d="M-94 80l-64 84 94-22M94 80l64 84-94-22" fill="#C68E58" stroke="#D9B47B" stroke-width="7"/>
+<path d="M-39 164L0 249 39 164Z" fill="#D9B47B"/>
+</g>
+<path d="M250 915H1150" stroke="#D9B47B" stroke-width="3"/>
+<text x="700" y="1032" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="119" letter-spacing="4" font-weight="bold" fill="#F5ECD9">ESCAPE</text>
+<text x="700" y="1152" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="119" letter-spacing="4" font-weight="bold" fill="#F5ECD9">POD CAST</text>
+<text x="700" y="1250" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="25" letter-spacing="9" fill="#D9B47B">PERSONAL AUDIO TRANSMISSIONS</text>
+</svg>
