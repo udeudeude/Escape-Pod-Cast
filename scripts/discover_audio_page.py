@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Discover direct audio links from one public webpage. No imports occur."""
+import datetime as dt
 import html.parser
 import ipaddress
 import json
@@ -86,5 +87,5 @@ for link, label in parser.links:
         break
 output = pathlib.Path("docs/discovery") / (REQUEST_ID + ".json")
 output.parent.mkdir(parents=True, exist_ok=True)
-output.write_text(json.dumps({"source": URL, "tracks": found}, ensure_ascii=False), encoding="utf-8")
+output.write_text(json.dumps({"source": URL, "created_at": dt.datetime.now(dt.timezone.utc).isoformat(), "tracks": found}, ensure_ascii=False), encoding="utf-8")
 print(f"Discovered {len(found)} direct audio links")
