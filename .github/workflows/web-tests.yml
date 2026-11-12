@@ -8,6 +8,7 @@ on:
       - 'docs/feeds/**'
       - 'scripts/expire_web_episodes.py'
       - 'scripts/import_audio_link_action.py'
+      - 'scripts/publish_batch.py'
       - 'scripts/discover_audio_page.py'
       - 'tests/test_iphone_feed_compatibility.py'
       - 'tests/test_expire_web_episodes.py'
@@ -33,4 +34,4 @@ jobs:
       - name: Check upload relay syntax
         run: node --check upload-service/server.js
       - name: Compile worker scripts
-        run: python -m py_compile scripts/expire_web_episodes.py scripts/cleanup_phone_assets.py scripts/discover_audio_page.py scripts/import_audio_link_action.py scripts/import_youtube_action.py
+        run: python -m py_compile scripts/expire_web_episodes.py scripts/cleanup_phone_assets.py scripts/discover_audio_page.py scripts/import_audio_link_action.py scripts/import_youtube_action.py scripts/publish_batch.py
