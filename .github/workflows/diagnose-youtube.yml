@@ -32,4 +32,5 @@ jobs:
           VIDEO_URL: ${{ inputs.url }}
         run: |
           node /tmp/bgutil/server/build/main.js > /tmp/bgutil.log 2>&1 &
+          sleep 3
           python3 scripts/diagnose_youtube.py
