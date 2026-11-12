@@ -9,6 +9,7 @@ import sys
 import tempfile
 import urllib.request
 import uuid
+import urllib.parse
 import xml.etree.ElementTree as ET
 
 URL = os.environ["EPISODE_URL"]
@@ -16,6 +17,11 @@ if not URL.startswith(("https://www.youtube.com/watch?", "https://youtu.be/", "h
     raise SystemExit("Only supported YouTube video URLs are accepted")
 if len(URL) > 2048:
     raise SystemExit("URL too long")
+parsed = urllib.parse.urlsplit(URL)
+query = urllib.parse.parse_qs(parsed.query)
+if parsed.hostname in ("m.youtube.com", "www.youtube.com") and parsed.path == "/watch" and query.get("v"):
+    URL = "https://www.youtube.com/watch?v=" + urllib.parse.quote(query["v"][0], safe="")
+
 feeds = glob.glob("docs/feeds/*/feed.xml")
 if len(feeds) != 1:
     raise SystemExit(f"Expected one existing feed, found {len(feeds)}")
@@ -30,7 +36,10 @@ with tempfile.TemporaryDirectory() as directory:
         "--audio-quality", "5", "--output", target,
         "--print", "after_move:title", URL
     ]
-    result = subprocess.run(command, capture_output=True, text=True, timeout=900, check=True)
+    result = subprocess.run(command, capture_output=True, text=True, timeout=900)
+    if result.returncode:
+        details = (result.stderr or result.stdout or "No downloader details available").strip()
+        raise SystemExit("YouTube import failed: " + details[-5000:])
     files = list(pathlib.Path(directory).glob("audio.*"))
     if len(files) != 1 or files[0].suffix.lower() != ".mp3":
         raise SystemExit("No MP3 output produced")
