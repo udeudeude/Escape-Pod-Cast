@@ -70,4 +70,5 @@ ET.SubElement(item, "enclosure", {"url": final_url, "length": length, "type": al
 first = channel.find("item")
 channel.insert(list(channel).index(first) if first is not None else len(channel), item)
 tree.write(feed, encoding="utf-8", xml_declaration=True)
+tree.write("docs/feed.xml", encoding="utf-8", xml_declaration=True)
 print(f"Published {title} ({length} bytes)")
